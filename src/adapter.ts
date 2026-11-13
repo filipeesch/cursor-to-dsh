@@ -1,38 +1,51 @@
 /**
- * The DSH `LlmAdapter` for the `cursor` route.
+ * The host `LlmAdapter` for the `cursor` route.
  *
- * `stream()` converts the request, runs one call on the session's Cursor agent and yields
- * its chunks. The model catalog comes from the Cursor SDK and is cached; without a key the
- * fallback list is offered so the route stays selectable.
+ * `stream()` converts the request, runs one call on the session's Cursor agent and yields its
+ * chunks. The model catalog is a snapshot the request path reads without blocking; the metadata
+ * reported for a model is the same configuration the request will carry.
  */
 import { LlmAdapter, LlmError } from "@deepseek-ai/dsh-llm";
 
-import { FALLBACK_MODELS, PROVIDER_ID, contextWindow, modelNames, reasoningInfo, type CatalogModel } from "./models.ts";
-import type { Image } from "./prompt.ts";
+import type { ModelCatalog } from "./cursor/catalog.ts";
+import type { ContextTierStore } from "./cursor/context-tier.ts";
+import {
+  advertisedContextWindow,
+  modelNames,
+  PROVIDER_ID,
+  reasoningInfo,
+  resolveModelId,
+  type CatalogModel,
+  type ModelPolicy,
+} from "./models.ts";
+import type { Image } from "./prompt/content.ts";
 import { ChunkQueue, Reply } from "./reply.ts";
-import { debug, runTurn, sessionKeyFor } from "./session.ts";
+import { sessionKeyFor, type SessionRegistry } from "./session/registry.ts";
+import { runTurn } from "./session/turn.ts";
+import type { StallInfo } from "./session/watchdog.ts";
+import type { CursorSession } from "./session/session.ts";
 import { imageRefs, readRequest } from "./transcript.ts";
 
-const CATALOG_TTL_MS = 10 * 60_000;
-const CATALOG_RETRY_MS = 60_000;
 /** Attachments are immutable, and every request carries the whole history: read each once. */
 const IMAGE_CACHE_SIZE = 64;
 
 export interface AdapterDeps {
   createAgent: (opts: any) => Promise<any>;
-  listModels: (opts: { apiKey: string }) => Promise<CatalogModel[]>;
   resolveApiKey: () => Promise<string | undefined>;
   cwdFor: (sessionId: string | undefined) => string;
   /** Base64 bytes of one image attachment; undefined when no attachment service is mounted. */
   readImage?: (ref: any, signal?: AbortSignal) => Promise<Image | undefined>;
-  /** Called once a live catalog proves the key works; pays the SDK's per-process setup early. */
-  prewarm?: (opts: { apiKey: string; modelId: string }) => void;
+  catalog: ModelCatalog;
+  tiers: ContextTierStore;
+  registry: SessionRegistry;
+  policy: ModelPolicy;
+  /** Provider inactivity window before a run is abandoned; 0 disables it. */
+  stallTimeoutMs: number;
+  onStall?: (session: CursorSession, info: StallInfo) => void;
 }
 
 export class CursorAdapter extends LlmAdapter {
   private readonly deps: AdapterDeps;
-  private catalog: { models: CatalogModel[]; live: boolean; at: number } | undefined;
-  private loading: Promise<CatalogModel[]> | undefined;
   private readonly images = new Map<string, Image>();
 
   constructor(deps: AdapterDeps) {
@@ -45,45 +58,63 @@ export class CursorAdapter extends LlmAdapter {
   }
 
   override async listModels(provider: string): Promise<any[]> {
-    const models = await this.models();
+    this.deps.catalog.note();
+    const models = this.deps.catalog.current();
     const names = modelNames(models);
     return models.map((m) => ({ provider, id: m.id, name: names.get(m.id), inputModalities: this.modalities() }));
   }
 
   override async resolveModel(provider: string, model: string): Promise<any> {
-    const models = await this.models();
-    const m = models.find((c) => c.id === model);
+    const models = this.models();
+    const entry = models.find((c) => c.id === model);
+    const accepted = this.deps.tiers.get(resolveModelId(model));
     const info: any = {
       provider,
       id: model,
       name: modelNames(models).get(model) ?? model,
       inputModalities: this.modalities(),
-      context: { contextWindow: contextWindow(m) },
+      context: { contextWindow: advertisedContextWindow(entry, accepted, this.deps.policy) },
       systemPromptUpdate: "in-history",
     };
-    const reasoning = reasoningInfo(m);
+    const reasoning = reasoningInfo(entry);
     if (reasoning) info.reasoning = reasoning;
     return info;
   }
 
   override async *stream(options: any): AsyncIterable<any> {
     if (options?.stop?.length) throw new LlmError("Cursor does not support stop sequences", "UNSUPPORTED_OPTION");
-    const [model, apiKey, images] = await Promise.all([this.find(options.model), this.deps.resolveApiKey(), this.loadImages(options)]);
+    const [apiKey, images] = await Promise.all([this.deps.resolveApiKey(), this.loadImages(options)]);
+    const model = this.models().find((m) => m.id === options.model);
     const transcript = readRequest(options, images);
     const sessionId = typeof options.sessionId === "string" ? options.sessionId : undefined;
     const queue = new ChunkQueue();
-    void runTurn({
-      model: { id: options.model, cursorParameters: model?.parameters },
-      transcript,
-      reasoning: options.reasoningEffort,
-      signal: options.signal,
-      apiKey,
-      sessionKey: sessionKeyFor(sessionId, transcript, options.purpose),
-      cwd: this.deps.cwdFor(sessionId),
-      deps: { createAgent: this.deps.createAgent },
-      reply: new Reply(queue),
-    });
+    void runTurn(
+      {
+        model: { id: options.model, cursorParameters: model?.parameters },
+        transcript,
+        reasoning: options.reasoningEffort,
+        signal: options.signal,
+        apiKey,
+        sessionKey: sessionKeyFor(sessionId, transcript, options.purpose),
+        cwd: this.deps.cwdFor(sessionId),
+        reply: new Reply(queue),
+      },
+      {
+        createAgent: this.deps.createAgent,
+        registry: this.deps.registry,
+        tiers: this.deps.tiers,
+        policy: this.deps.policy,
+        stallTimeoutMs: this.deps.stallTimeoutMs,
+        onStall: this.deps.onStall,
+      },
+    );
     yield* queue;
+  }
+
+  /** The catalog as the request path may read it: a snapshot, never a fetch. */
+  private models(): CatalogModel[] {
+    this.deps.catalog.note();
+    return this.deps.catalog.current();
   }
 
   private modalities(): string[] {
@@ -101,8 +132,8 @@ export class CursorAdapter extends LlmAdapter {
         if (!image) {
           try {
             image = await read(ref, options.signal);
-          } catch (err) {
-            debug(`image ${id} unreadable: ${err instanceof Error ? err.message : String(err)}`);
+          } catch {
+            /* an unreadable attachment becomes a text note downstream */
           }
           if (image) {
             this.images.set(id, image);
@@ -113,36 +144,6 @@ export class CursorAdapter extends LlmAdapter {
       }),
     );
     return out;
-  }
-
-  /** Catalog entry for a model id; unknown ids still route, without Cursor params. */
-  private async find(id: string): Promise<CatalogModel | undefined> {
-    return (await this.models()).find((m) => m.id === id);
-  }
-
-  private async models(): Promise<CatalogModel[]> {
-    const c = this.catalog;
-    if (c && Date.now() - c.at < (c.live ? CATALOG_TTL_MS : CATALOG_RETRY_MS)) return c.models;
-    this.loading ??= this.load().finally(() => (this.loading = undefined));
-    return this.loading;
-  }
-
-  private async load(): Promise<CatalogModel[]> {
-    let models: CatalogModel[] = [];
-    let apiKey: string | undefined;
-    try {
-      apiKey = await this.deps.resolveApiKey();
-      if (apiKey) models = (await this.deps.listModels({ apiKey })) ?? [];
-    } catch (err) {
-      debug(`catalog failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    const live = models.length > 0;
-    if (live && apiKey) {
-      const modelId = models.find((m) => m.id === "default")?.id ?? models[0].id;
-      this.deps.prewarm?.({ apiKey, modelId });
-    }
-    this.catalog = { models: live ? models : FALLBACK_MODELS, live, at: Date.now() };
-    return this.catalog.models;
   }
 }
 

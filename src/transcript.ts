@@ -10,7 +10,7 @@
  * Image blocks are attachment references; the adapter loads their bytes first and passes
  * them in by attachment id. Images it could not load become a text note.
  */
-import { asObject, type Image } from "./prompt.ts";
+import { asObject, type Image } from "./prompt/content.ts";
 
 export interface Transcript {
   systemPrompt: string;

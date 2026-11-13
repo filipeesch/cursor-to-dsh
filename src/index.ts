@@ -1,40 +1,36 @@
 /**
- * DSH plugin entry: registers Cursor as the `cursor` LLM provider route.
+ * Plugin entry: registers Cursor as the `cursor` LLM provider route.
  *
- * The key is read per call: DSH credentials (`apiKeyEnv`, default `CURSOR_API_KEY`), then the
- * launch environment, then the `apiKey` config. The Cursor agent works in the session's
- * working directory unless `DSH_CURSOR_CWD` or `cwd` overrides it.
+ * The key is read per call: host credentials (`apiKeyEnv`, default `CURSOR_API_KEY`), then the
+ * launch environment, then the `apiKey` config. The Cursor agent works in the session's working
+ * directory unless `DSH_CURSOR_CWD` or `cwd` overrides it.
  */
-import type { Context, Volatile } from "@deepseek-ai/cordis";
+import type { Context } from "@deepseek-ai/cordis";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { launchEnvironmentOf } from "@deepseek-ai/dsh-launch-environment";
-import Schema from "@deepseek-ai/schemastery";
+import { join } from "node:path";
 
 import { CursorAdapter } from "./adapter.ts";
-import { PROVIDER_ID, setContextPreference } from "./models.ts";
+import { Config, resolveSettings } from "./config.ts";
+import { ModelCatalog, type CatalogSnapshot } from "./cursor/catalog.ts";
+import { ContextTierStore } from "./cursor/context-tier.ts";
+import { pluginStateDir, readJsonFile, type TierFile, writeJsonFile } from "./cursor/state.ts";
+import { createStallDiagnostics } from "./diagnostics.ts";
+import { debug } from "./debug.ts";
+import { PROVIDER_ID, resolveModelId } from "./models.ts";
+import { SessionRegistry } from "./session/registry.ts";
 import { createCursorAgent, listCursorModels, prewarmCursor } from "./sdk.ts";
-import { closeAllCursorSessions, debug } from "./session.ts";
 
 export const name = "cursor-to-dsh";
 export const inject = ["llm"];
-
-export interface Config {
-  /** Volatile so the settings service gives this plugin a namespace and the Models page lists Cursor. */
-  apiKeyEnv: Volatile<string> | string;
-  apiKey?: string;
-  context: string;
-  cwd?: string;
-}
-
-export const Config: Schema<Config> = Schema.object({
-  apiKeyEnv: Schema.string().role("credential-ref").default("CURSOR_API_KEY").description("Credential / environment variable that holds the Cursor API key.").volatile(),
-  apiKey: Schema.string().role("secret").description("Cursor API key, used only when the credential and environment are empty."),
-  context: Schema.string().default("min").description("Cursor context tier: min, max, or an offered value such as 300k."),
-  cwd: Schema.string().description("Cursor agent working directory; default is the session's directory."),
-}) as any;
+export { Config };
 
 export function apply(ctx: Context, config: Config): void {
-  setContextPreference(config?.context);
+  const settings = resolveSettings(config);
+  const stateDir = pluginStateDir(settings.stateDir);
+  const catalogFile = join(stateDir, "catalog.json");
+  const tiersFile = join(stateDir, "context-tiers.json");
+
   const keyRef = (): string => {
     const value = config?.apiKeyEnv;
     const current = typeof value === "string" ? value : value?.get?.();
@@ -76,17 +72,44 @@ export function apply(ctx: Context, config: Config): void {
     return { data: Buffer.from(stored.data).toString("base64"), mimeType: stored.ref?.mediaType ?? ref.mediaType };
   };
 
-  const prewarm = /^(0|false|off)$/i.test(process.env.DSH_CURSOR_PREWARM ?? "")
-    ? undefined
-    : (opts: { apiKey: string; modelId: string }) => void prewarmCursor(opts);
+  const prewarmEnabled = !/^(0|false|off)$/i.test(process.env.DSH_CURSOR_PREWARM ?? "");
+  const catalog = new ModelCatalog({
+    listModels: listCursorModels,
+    resolveApiKey,
+    persist: (snapshot: CatalogSnapshot) => writeJsonFile(catalogFile, { version: 1, ...snapshot }),
+    onLive: (opts) => {
+      // Pay the SDK's one-time per-process setup in the background, once a live catalog proves the key works.
+      if (prewarmEnabled) void prewarmCursor(opts);
+    },
+  });
+  catalog.load(readJsonFile<CatalogSnapshot>(catalogFile));
 
-  const adapter = new CursorAdapter({ createAgent: createCursorAgent, listModels: listCursorModels, resolveApiKey, cwdFor, readImage, prewarm });
+  const tiers = new ContextTierStore(ContextTierStore.from(readJsonFile<TierFile>(tiersFile)), (accepted) =>
+    writeJsonFile(tiersFile, { version: 1, tiers: accepted }),
+  );
+
+  const registry = new SessionRegistry();
+  const recordStall = createStallDiagnostics(stateDir);
+
+  const adapter = new CursorAdapter({
+    createAgent: createCursorAgent,
+    resolveApiKey,
+    cwdFor,
+    readImage,
+    catalog,
+    tiers,
+    registry,
+    policy: settings.policy,
+    stallTimeoutMs: settings.stallTimeoutMs,
+    onStall: (session, info) =>
+      recordStall({ key: session.key, model: session.modelId || resolveModelId("auto"), elapsedMs: info.elapsedMs, lastEvent: info.lastEvent }),
+  });
+
   (ctx as any).llm.registerConfigurableProviders([
     { provider: PROVIDER_ID, displayName: "Cursor", settingsNs: (ctx as any).fiber?.entry?.options.id ?? name, settingsPath: [] },
   ]);
   (ctx as any).llm.registerAdapter([PROVIDER_ID], adapter);
-  ctx.effect(() => () => closeAllCursorSessions(), "cursor sessions");
-  void resolveApiKey()
-    .then((key) => (key ? adapter.listModels(PROVIDER_ID) : undefined))
-    .catch(() => {});
+  ctx.effect(() => () => registry.closeAll(), "cursor sessions");
+  // Warm the catalog off the request path; a call never waits for it.
+  void catalog.refresh().catch(() => {});
 }

@@ -3,39 +3,41 @@
 [![npm](https://img.shields.io/npm/v/cursor-to-dsh)](https://www.npmjs.com/package/cursor-to-dsh)
 [![license](https://img.shields.io/npm/l/cursor-to-dsh)](LICENSE)
 
-> Use Cursor models as the `cursor` LLM provider in DeepSeek Harness (DSH) and DeepSeek Desktop, through the official `@cursor/sdk` and your own Cursor API key. DSH keeps the agent loop, tools and permissions; Cursor is only the model. The docs are in Chinese.
+> Use Cursor models as the `cursor` LLM provider in DeepSeek Harness (DSH) and DeepSeek Desktop, through the official `@cursor/sdk` and your own Cursor API key. DSH keeps the agent loop, tools and permissions; Cursor is only the model.
 
-把 Cursor 注册为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH，含 DeepSeek Desktop）的模型提供方 `cursor`。DSH 负责 agent 循环、工具和权限，Cursor 只当模型。
+Register Cursor as a model provider named `cursor` for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH, including DeepSeek Desktop). DSH owns the agent loop, tools and permissions; Cursor only provides the model.
 
-![一次带工具调用的对话：DSH 把工具交给 Cursor，Cursor 调工具时交回 DSH 执行，结果回填到同一个 Cursor run](docs/images/flow.png)
+![One conversation with a tool call: DSH hands tools to Cursor, Cursor hands the call back to DSH, and the result returns to the same Cursor run](docs/images/flow.png)
 
-## 特点
+## Features
 
-- **官方接口**：只用 Cursor 官方 `@cursor/sdk` 和你自己的 API Key，不逆向私有协议、不读 Cursor IDE 登录态；通过 DSH 的 `ctx.llm.registerAdapter` 注册，不改宿主代码。
-- **工具归 DSH**：Cursor 内置工具全部关闭，读写文件、执行命令都由 DSH 执行，沿用 DSH 的沙箱和审批。
-- **缓存复用**：每个 DSH 会话对应一个 Cursor agent，只发新增内容；工具结果回填到同一个 run 继续。
-- **模型与用量**：模型和推理强度来自 Cursor 实时目录，始终 `fast=false`；按 DSH 互不重叠的用量桶上报，不误报超限。
-- **图片**：用户消息和工具结果里的图片转给 Cursor。
+- **Official SDK only**: uses Cursor's `@cursor/sdk` and your own API key. No private protocol, no Cursor IDE session; registered through the host seam `ctx.llm.registerAdapter`, with no host patches.
+- **Tools belong to the host**: Cursor's built-in file, shell and edit tools stay off. Reading, writing and running commands happen in DSH, under DSH's sandbox and approvals.
+- **Cache reuse**: one Cursor agent per DSH session, and only new content is sent. Tool results return into the same run.
+- **Per-call usage**: the provider's usage report for each model turn is what reaches the host, so throughput, token and context meters show what Cursor actually billed for that call.
+- **Honest model metadata**: the context window reported to the host is the tier Cursor accepted, including after an automatic step-down, and can be overridden.
+- **Stalls are visible**: a run that stops producing content is abandoned with a clear error and a diagnostic, instead of waiting forever.
+- **Images**: images in user messages and tool results are forwarded to Cursor.
 
-## 安装
+## Install
 
-前置：DSH `0.2.0-rc.2` 及以上（DeepSeek Desktop 内置 `0.2.1-rc.2`）。
+Requires DSH `0.2.0-rc.2` or newer (DeepSeek Desktop bundles `0.2.1-rc.2`).
 
-**CLI 或其他 profile**：`dsh plugin --profile <名称> add cursor-to-dsh`。
+**CLI or any other profile**: `dsh plugin --profile <name> add cursor-to-dsh`.
 
-**DeepSeek Desktop**：`desktop` profile 由 Desktop 独占，`dsh plugin add` 会报 `managed exclusively by the Electron application`，需要手动改：
+**DeepSeek Desktop**: the `desktop` profile is managed by the desktop app, and `dsh plugin add` fails with `managed exclusively by the Electron application`. Edit it by hand:
 
-1. 完全退出 DeepSeek Harness Desktop。
-2. 在 `~/.dsh/profiles/desktop/package.json` 里**追加**两处，已有条目不动：
+1. Quit DeepSeek Harness Desktop completely.
+2. In `~/.dsh/profiles/desktop/package.json`, append two entries without touching the existing ones:
 
    ```json
    {
-     "dependencies": { "cursor-to-dsh": "^0.1.1" },
-     "dsh": { "profile": { "bundles": ["…已有条目…", "cursor-to-dsh"] } }
+     "dependencies": { "cursor-to-dsh": "^0.2.0" },
+     "dsh": { "profile": { "bundles": ["…existing entries…", "cursor-to-dsh"] } }
    }
    ```
 
-3. 用 Desktop 自带的 pnpm 安装，然后启动：
+3. Install with the pnpm the app ships, then start it:
 
    ```bash
    cd ~/.dsh/profiles/desktop
@@ -43,87 +45,102 @@
    open -a "DeepSeek Harness"
    ```
 
-升级：改版本号后重复第 3 步。
+To upgrade, change the version and repeat step 3.
 
-### 填 API Key
+### API key
 
-在 [cursor.com/dashboard](https://cursor.com/dashboard) → API Keys → New API Key 创建（个人 key 或 service account key，不支持 Team Admin key）。
+Create a key at [cursor.com/dashboard](https://cursor.com/dashboard) → API Keys → New API Key (a personal key or a service account key; Team Admin keys are not supported).
 
-Desktop 的「模型」设置页不能给第三方插件填 key，推荐写进 `~/.dsh/.credentials.yaml`（权限 `0600`，热加载）；文件已存在时只在 `refs:` 下加一行：
+The Desktop "Models" settings page cannot store a key for a third-party plugin, so put it in `~/.dsh/.credentials.yaml` (mode `0600`, hot reloaded). If the file already exists, add one line under `refs:`:
 
 ```yaml
 version: 1
 refs:
-  CURSOR_API_KEY: <你的 key>
+  CURSOR_API_KEY: <your key>
 ```
 
-查找顺序：凭据文件 → 环境变量 `CURSOR_API_KEY` → 插件配置 `apiKey`。
+Lookup order: credentials file → `CURSOR_API_KEY` environment variable → plugin `apiKey` config.
 
-### 验证
+### Verify
 
-「设置 → 模型」里出现 Cursor，模型选择里有 `cursor` 下的模型即成功。也可以把 `agent-default-model` 设为 `provider: cursor`。
+Cursor appears under Settings → Models, and its models appear under the `cursor` provider. You can also set `agent-default-model` to `provider: cursor`.
 
-### 让 Agent 代装
+### Let an agent install it
 
-把下面这段发给 Claude Code、Cursor、pi 等：
+Send this to Claude Code, Cursor, pi, or another agent:
 
 ```text
-按 https://github.com/lukeinx/cursor-to-dsh 的 README 给我的 DeepSeek Harness Desktop 安装 cursor-to-dsh，
-遵守 README 里给 Agent 的规则；装好后告诉我把 Cursor API Key 填到哪里，key 由我自己填。
+Install cursor-to-dsh for my DeepSeek Harness Desktop by following the README at
+https://github.com/lukeinx/cursor-to-dsh, obeying the agent rules in it. Tell me where to put
+the Cursor API key once it is installed; I will fill in the key myself.
 ```
 
-给 Agent 的规则：
+Rules for an agent doing the install:
 
-- 改 profile 前先退出 Desktop；只追加条目，不改已有的 `dependencies` 和 `bundles`。
-- key 由用户自己写入凭据文件，Agent 不读取、不打印。
-- 改本仓库代码前先读 [AGENTS.md](AGENTS.md)。
+- Quit Desktop before editing the profile; only append entries, never change the existing `dependencies` and `bundles`.
+- The user writes the key into the credentials file. The agent must not read or print it.
+- Read [AGENTS.md](AGENTS.md) before changing this repository.
 
-## 配置
+## Configuration
 
-默认不用配。需要时在 profile 的 `cordis.patch.yml` 覆盖插件这一行（patch 会替换整个 `config`，要写全）：
+The defaults work as they are. To change them, override this plugin's row in the profile's `cordis.patch.yml` (a patch replaces the whole `config`, so write every field you need):
 
 ```yaml
 - id: llm-cursor
   name: cursor-to-dsh
   config:
     apiKeyEnv: CURSOR_API_KEY
-    context: min
+    context: max
+    contextWindow: auto
+    fast: "off"
+    stallTimeoutMs: 120000
 ```
 
-| 配置项 | 默认值 | 环境变量覆盖 | 含义 |
+| Option | Default | Environment override | Meaning |
 |---|---|---|---|
-| `apiKeyEnv` | `CURSOR_API_KEY` | | 存 key 的凭据名 / 环境变量名 |
-| `apiKey` | 无 | | 明文 key，不推荐 |
-| `context` | `min` | `DSH_CURSOR_CONTEXT` | 上下文档位：`min`、`max` 或如 `300k`；被拒时自动降档 |
-| `cwd` | 会话工作目录 | `DSH_CURSOR_CWD` | Cursor agent 的工作目录 |
+| `apiKeyEnv` | `CURSOR_API_KEY` | | Credential / environment variable that holds the Cursor API key |
+| `apiKey` | none | | Plain-text key; not recommended |
+| `context` | `max` | `DSH_CURSOR_CONTEXT` | Context tier requested from Cursor: `min`, `max`, or an offered value such as `300k`. A rejected tier steps down automatically and the accepted tier is remembered |
+| `contextWindow` | `auto` | | Context window reported to the host: `auto` follows the accepted tier, or give a token count such as `400000` |
+| `fast` | `off` | | Cursor Fast (priority, higher-cost) mode: `off`, `on`, or `auto` to leave it to Cursor |
+| `stallTimeoutMs` | `120000` | `DSH_CURSOR_STALL_TIMEOUT_MS` | Milliseconds without provider content before a run is abandoned; `0` disables the watchdog |
+| `cwd` | session working directory | `DSH_CURSOR_CWD` | Cursor agent working directory |
 
-其他环境变量：`DSH_CURSOR_DEBUG=1` 输出调试日志到 stderr；`DSH_CURSOR_PREWARM=0` 关闭预热（插件加载后在后台预建一次 agent，省掉 Cursor SDK 首次约 8 秒的初始化）。
+Other environment variables:
 
-## 已知限制
+- `DSH_CURSOR_DEBUG=1` writes debug lines to stderr.
+- `DSH_CURSOR_PREWARM=0` disables warm-up (the plugin pre-builds one agent in the background, saving the Cursor SDK's first ~8 seconds of setup).
+- `DSH_CURSOR_STATE_DIR` overrides where the plugin keeps its small persisted files, defaulting to the DSH home (`~/.dsh`). It stores the cached model catalog, the accepted context tier per model, and `stall.log`.
 
-- 文件附件、已卸载（offloaded）或读不出的图片不转给 Cursor，只留占位说明；重放历史时只带最后一条用户消息的图片。
-- 工具交接期间不报用量，上下文用量在 run 结束时更新。
-- 不支持 `stop`（报 `UNSUPPORTED_OPTION`）；`temperature`、`maxTokens` 被忽略。
+## Known limitations
 
-## 开发
+- File attachments, offloaded images and unreadable images are not forwarded to Cursor; they become a placeholder note. Replaying history carries only the last user message's images.
+- Usage is reported per provider turn. When Cursor reports nothing for a call, the host is told nothing for that call; the plugin never invents a number. A report that arrives after its call closed, or before the next call has produced content of its own turn, is discarded instead of being attributed to the wrong call.
+- A tool call is handed to DSH within 100 ms. Part of that budget (40 ms) is reserved for catching the turn's usage report, so a slow report can cost the numbers for that call but never delays the tools.
+- The reported context window is the tier the plugin requested. If the Cursor account enforces a smaller window than the catalog advertises, the host meter still follows the requested tier.
+- `stop` is not supported (`UNSUPPORTED_OPTION`); `temperature` and `maxTokens` are ignored.
+
+## Development
 
 ```bash
-npm install && npm run build   # DSH 加载的是 lib/，改源码后要重新 build 并重启 DSH
-npm test                       # 假 Cursor agent 的单测
-npm run check                  # 类型检查
-npm run check:public           # 推 GitHub / 发 npm 前：不含内网链接和本机路径
-CURSOR_API_KEY=... node --experimental-strip-types scripts/live.ts [模型 id]   # 真实 Cursor 实测
+npm install && npm run build   # the host loads lib/, so rebuild and restart the app after a source change
+npm test                       # unit tests with a fake Cursor agent
+npm run check                  # type check
+npm run check:public           # before pushing to GitHub or publishing: no internal links, local paths or non-English text
+CURSOR_API_KEY=... node --experimental-strip-types scripts/live.ts [model]   # real Cursor run
 ```
 
-本地源码接入 Desktop：安装第 2 步的依赖写成 `"cursor-to-dsh": "link:<仓库绝对路径>"`。
+The live script prints, for every call, the provider's usage report and how long after the call started it arrived. That is the measurement the per-call usage attribution depends on.
 
-不动 profile、在真实 DSH 里试跑一次（overlay 里的路径必须是绝对路径）：
+Point Desktop at a local checkout by writing the dependency as `"cursor-to-dsh": "link:<absolute repo path>"`.
+
+Try a run inside a real host without touching your profile (paths in the overlay must be absolute):
 
 ```yaml
 # /tmp/cursor-overlay.yml
 - insert:
     - id: llm-cursor
-      name: <仓库绝对路径>/lib/index.js
+      name: <absolute repo path>/lib/index.js
 - id: agent-default-model
   name: '@deepseek-ai/dsh-agent-default-model'
   config:
@@ -136,10 +153,10 @@ DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
 CURSOR_API_KEY=... DSH_CURSOR_DEBUG=1 "$DSH" --profile headless --patch /tmp/cursor-overlay.yml --json "Read README.md and summarize it in one line"
 ```
 
-调试日志里工具结果回填那次应显示 `plan=results`，多轮对话的第二轮应显示 `plan=send`。`--patch` 挂载的插件用自己的 `@deepseek-ai/dsh-llm` 副本，错误码会变成 `UNKNOWN`，只用于试跑。
+In the debug log, the call that delivers tool results shows `plan=results`, and the second turn of a conversation shows `plan=send`. A plugin mounted with `--patch` uses its own copy of the host packages, so error codes become `UNKNOWN`; use it for trial runs only.
 
-架构和约束见 [AGENTS.md](AGENTS.md)。
+Architecture and constraints are in [AGENTS.md](AGENTS.md); the sequence diagram source is [docs/images/flow.svg](docs/images/flow.svg).
 
-## 版权
+## License
 
-MIT，见 [LICENSE](LICENSE)。Copyright (c) 2026 Luke。
+MIT, see [LICENSE](LICENSE). Copyright (c) 2026 Luke.

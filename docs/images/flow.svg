@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="980" viewBox="0 0 1400 980" role="img" aria-label="How cursor-to-dsh connects the host agent loop to a Cursor agent">
+<title>cursor-to-dsh: one Cursor agent per conversation</title>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f2328"/>
+  </marker>
+</defs>
+<rect width="1400" height="980" fill="#ffffff"/>
+<text x="700" y="38" text-anchor="middle" font-size="21" font-weight="700" fill="#1f2328">One conversation, one Cursor agent, tools run by the host</text>
+<rect x="54" y="72" width="272" height="58" rx="10" fill="#f6f8fa" stroke="#57606a" stroke-width="1.6"/>
+<text x="190" y="107" text-anchor="middle" font-size="18" font-weight="600" fill="#1f2328">You</text>
+<line x1="190" y1="130" x2="190" y2="812" stroke="#8c959f" stroke-width="1.5" stroke-dasharray="6 6"/>
+<rect x="384" y="72" width="272" height="58" rx="10" fill="#f6f8fa" stroke="#57606a" stroke-width="1.6"/>
+<text x="520" y="107" text-anchor="middle" font-size="18" font-weight="600" fill="#1f2328">DSH Desktop</text>
+<line x1="520" y1="130" x2="520" y2="812" stroke="#8c959f" stroke-width="1.5" stroke-dasharray="6 6"/>
+<rect x="714" y="72" width="272" height="58" rx="10" fill="#f6f8fa" stroke="#57606a" stroke-width="1.6"/>
+<text x="850" y="107" text-anchor="middle" font-size="18" font-weight="600" fill="#1f2328">cursor-to-dsh</text>
+<line x1="850" y1="130" x2="850" y2="812" stroke="#8c959f" stroke-width="1.5" stroke-dasharray="6 6"/>
+<rect x="1044" y="72" width="272" height="58" rx="10" fill="#f6f8fa" stroke="#57606a" stroke-width="1.6"/>
+<text x="1180" y="107" text-anchor="middle" font-size="18" font-weight="600" fill="#1f2328">Cursor agent (official SDK)</text>
+<line x1="1180" y1="130" x2="1180" y2="812" stroke="#8c959f" stroke-width="1.5" stroke-dasharray="6 6"/>
+<line x1="190" y1="172" x2="520" y2="172" stroke="#1f2328" stroke-width="1.8" marker-end="url(#arrow)"/>
+<text x="355" y="162" text-anchor="middle" font-size="16.5" fill="#1f2328">Send message</text>
+<line x1="520" y1="232" x2="850" y2="232" stroke="#1f2328" stroke-width="1.8" marker-end="url(#arrow)"/>
+<text x="685" y="222" text-anchor="middle" font-size="16.5" fill="#1f2328">Model call: messages + host tools</text>
+<line x1="850" y1="292" x2="1180" y2="292" stroke="#1f2328" stroke-width="1.8" marker-end="url(#arrow)"/>
+<text x="1015" y="274" text-anchor="middle" font-size="16.5" fill="#1f2328">First send: system prompt + history</text>
+<text x="1015" y="289" text-anchor="middle" font-size="13.5" fill="#57606a">later sends carry only new content</text>
+<line x1="1180" y1="356" x2="850" y2="356" stroke="#1f2328" stroke-width="1.8" stroke-dasharray="7 5" marker-end="url(#arrow)"/>
+<text x="1015" y="346" text-anchor="middle" font-size="16.5" fill="#1f2328">Thinking and text stream</text>
+<line x1="1180" y1="412" x2="850" y2="412" stroke="#1f2328" stroke-width="1.8" stroke-dasharray="7 5" marker-end="url(#arrow)"/>
+<text x="1015" y="402" text-anchor="middle" font-size="16.5" fill="#1f2328">Calls tool read</text>
+<line x1="850" y1="468" x2="520" y2="468" stroke="#1f2328" stroke-width="1.8" stroke-dasharray="7 5" marker-end="url(#arrow)"/>
+<text x="685" y="458" text-anchor="middle" font-size="16.5" fill="#1f2328">Hands over tool calls; stream ends</text>
+<line x1="520" y1="588" x2="850" y2="588" stroke="#1f2328" stroke-width="1.8" marker-end="url(#arrow)"/>
+<text x="685" y="578" text-anchor="middle" font-size="16.5" fill="#1f2328">Call again with the tool result</text>
+<line x1="850" y1="644" x2="1180" y2="644" stroke="#1f2328" stroke-width="1.8" marker-end="url(#arrow)"/>
+<text x="1015" y="634" text-anchor="middle" font-size="16.5" fill="#1f2328">Result goes into the same run</text>
+<line x1="1180" y1="700" x2="850" y2="700" stroke="#1f2328" stroke-width="1.8" stroke-dasharray="7 5" marker-end="url(#arrow)"/>
+<text x="1015" y="690" text-anchor="middle" font-size="16.5" fill="#1f2328">Continues the answer</text>
+<line x1="850" y1="768" x2="520" y2="768" stroke="#1f2328" stroke-width="1.8" stroke-dasharray="7 5" marker-end="url(#arrow)"/>
+<text x="685" y="758" text-anchor="middle" font-size="16.5" fill="#1f2328">Reply + this call's usage</text>
+<text x="685" y="790" text-anchor="middle" font-size="13.5" fill="#57606a">when the provider reports it</text>
+<rect x="324" y="506" width="392" height="50" rx="8" fill="#fff8c5" stroke="#d4a72c" stroke-width="1.5"/>
+<text x="520" y="537" text-anchor="middle" font-size="15.5" fill="#5c4400">Runs the tool under the host's sandbox and approvals</text>
+<rect x="60" y="838" width="1280" height="122" rx="10" fill="#fdf2f2" stroke="#c8553d" stroke-width="1.5"/>
+<text x="84" y="870" font-size="17" font-weight="700" fill="#8a2c17">Stall watchdog</text>
+<text x="84" y="900" font-size="15.5" fill="#5c2013">No provider content for the stall window (default 120 s) ends the call with CURSOR_RUN_STALLED</text>
+<text x="84" y="924" font-size="15.5" fill="#5c2013">and a line in stall.log. Waiting for the host to run a tool is not provider silence and does not count.</text>
+<text x="84" y="948" font-size="15.5" fill="#5c2013">A tool handoff is held for at most 100 ms, part of it reserved for catching this call's usage report.</text>
+</svg>

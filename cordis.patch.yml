@@ -5,4 +5,7 @@
       name: cursor-to-dsh
       config:
         apiKeyEnv: CURSOR_API_KEY
-        context: min
+        context: max
+        contextWindow: auto
+        fast: "off"
+        stallTimeoutMs: 120000

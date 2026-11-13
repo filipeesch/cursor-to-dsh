@@ -2,15 +2,17 @@ import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
 import { CursorAdapter } from "../src/adapter.ts";
-import { FALLBACK_MODELS } from "../src/models.ts";
-import { closeAllCursorSessions, cursorSessionCount } from "../src/session.ts";
-import { cursorOverhead, resetCursorOverhead } from "../src/usage.ts";
+import { ModelCatalog } from "../src/cursor/catalog.ts";
+import { ContextTierStore } from "../src/cursor/context-tier.ts";
+import { DEFAULT_POLICY, FALLBACK_MODELS, type ModelPolicy } from "../src/models.ts";
+import { SessionRegistry } from "../src/session/registry.ts";
 
 /** Scripted fake Cursor agent. Each send runs `script(ctx)` as the model. */
-function fakeCursor(script: (ctx: any) => AsyncGenerator<any, any, void>) {
+function fakeCursor(script: (ctx: any) => AsyncGenerator<any, any, void> | Promise<any>) {
   const created: any[] = [];
   const sends: any[] = [];
   const sendOpts: any[] = [];
+  const runs: any[] = [];
   const createAgent = async (opts: any) => {
     created.push(opts);
     const agentTools = opts.local?.customTools ?? {};
@@ -19,25 +21,35 @@ function fakeCursor(script: (ctx: any) => AsyncGenerator<any, any, void>) {
         sends.push(msg);
         sendOpts.push(options);
         const tools = options?.local?.customTools ?? agentTools;
-        let status: any = { status: "finished", usage: { inputTokens: 100, outputTokens: 10, cacheReadTokens: 80, cacheWriteTokens: 10 } };
+        let status: any = { status: "finished" };
         const queue: any[] = [];
         let wake: (() => void) | undefined;
         let finished = false;
         let cancelled = false;
+        const emit = (ev: any) => {
+          if (cancelled || finished) return;
+          queue.push(ev);
+          wake?.();
+        };
         const ctx = {
           msg,
           opts,
+          emit,
+          say: (text: string) => emit({ type: "assistant", message: { content: [{ type: "text", text }] } }),
+          think: (text: string) => emit({ type: "thinking", text }),
+          usage: (usage: any) => emit({ type: "usage", usage }),
           callTool: async (name: string, args: any, id: string) => {
             if (!tools[name]) throw new Error(`unknown tool ${name}`);
             return tools[name].execute(args, { toolCallId: id });
           },
           setStatus: (s: any) => (status = s),
         };
+        runs.push({ emit: (ev: any) => emit(ev) });
         (async () => {
-          for await (const ev of script(ctx)) {
-            if (cancelled) return;
-            queue.push(ev);
-            wake?.();
+          try {
+            for await (const ev of await script(ctx)) emit(ev);
+          } catch {
+            /* a failing script still ends its turn */
           }
           finished = true;
           wake?.();
@@ -66,10 +78,15 @@ function fakeCursor(script: (ctx: any) => AsyncGenerator<any, any, void>) {
       close: () => {},
     };
   };
-  return { createAgent, created, sends, sendOpts };
+  return {
+    createAgent,
+    created,
+    sends,
+    sendOpts,
+    runs,
+    emit: (ev: any) => runs.at(-1)?.emit(ev),
+  };
 }
-
-const say = (text: string) => ({ type: "assistant", message: { content: [{ type: "text", text }] } });
 
 let seq = 0;
 const nextId = () => `msg-${++seq}`;
@@ -90,7 +107,7 @@ const readTool = { name: "read", description: "Read", parameters: { type: "objec
 const xTool = { name: "x_doctor", description: "Check X", parameters: { type: "object", properties: {} } };
 
 const v = (...values: string[]) => values.map((value) => ({ value }));
-const catalog = [
+const catalogModels = [
   { id: "m", displayName: "M" },
   {
     id: "claude",
@@ -104,17 +121,37 @@ const catalog = [
   },
 ];
 
+let env: any;
+const tick = async (times = 6) => {
+  for (let i = 0; i < times; i++) await new Promise((resolve) => setImmediate(resolve));
+};
+
 function adapterFor(cursor: { createAgent: any }, deps: any = {}) {
+  const catalog = deps.catalog ?? new ModelCatalog({ listModels: async () => catalogModels, resolveApiKey: async () => "k" });
+  if (!deps.catalog) catalog.load({ models: catalogModels, live: true, fetchedAt: Date.now() });
+  env = {
+    catalog,
+    tiers: deps.tiers ?? new ContextTierStore(),
+    registry: deps.registry ?? new SessionRegistry(),
+    policy: (deps.policy ?? DEFAULT_POLICY) as ModelPolicy,
+    stallTimeoutMs: deps.stallTimeoutMs ?? 0,
+    onStall: deps.onStall,
+  };
   return new CursorAdapter({
     createAgent: cursor.createAgent,
-    listModels: async () => catalog,
-    resolveApiKey: async () => "k",
-    cwdFor: () => "/work",
-    ...deps,
+    resolveApiKey: deps.resolveApiKey ?? (async () => "k"),
+    cwdFor: deps.cwdFor ?? (() => "/work"),
+    ...(deps.readImage ? { readImage: deps.readImage } : {}),
+    catalog: env.catalog,
+    tiers: env.tiers,
+    registry: env.registry,
+    policy: env.policy,
+    stallTimeoutMs: env.stallTimeoutMs,
+    onStall: env.onStall,
   });
 }
 
-/** One DSH model call; the reply is assembled the way DSH stores it. */
+/** One host model call; the reply is assembled the way the host stores it. */
 async function call(adapter: CursorAdapter, messages: any[], options: any = {}) {
   const chunks: any[] = [];
   for await (const c of adapter.stream({ provider: "cursor", model: "m", messages, tools: [readTool], sessionId: "sess-1", ...options })) chunks.push(c);
@@ -131,20 +168,19 @@ async function call(adapter: CursorAdapter, messages: any[], options: any = {}) 
 }
 
 beforeEach(() => {
-  closeAllCursorSessions();
-  resetCursorOverhead();
+  env = undefined;
 });
 
 test("one Cursor agent per session; later calls send only the new user text", async () => {
-  const cursor = fakeCursor(async function* (ctx) {
-    yield say(`echo:${typeof ctx.msg === "string" ? ctx.msg.slice(-5) : ""}`);
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("echo");
   });
   const adapter = adapterFor(cursor);
   const s = sys("SYS");
   const u1 = user("hello");
   const r1 = await call(adapter, [s, u1]);
   assert.deepEqual(r1.finish, { kind: "stop" });
-  assert.equal(r1.text, "echo:hello");
+  assert.equal(r1.text, "echo");
   assert.match(cursor.sends[0], /^Only the tools attached[\s\S]*SYS[\s\S]*### user\nhello$/);
   assert.equal(cursor.created[0].local.cwd, "/work");
   assert.deepEqual(cursor.created[0].tools, ["mcp"]);
@@ -156,12 +192,166 @@ test("one Cursor agent per session; later calls send only the new user text", as
   assert.equal(cursor.sends[1], "again", "only the new text is sent");
 });
 
-test("a tool call stays inside one Cursor run and gets DSH's real result", async () => {
+test("usage: each call reports the provider turn that produced it, never the run total", async () => {
+  let turn = 0;
+  const cursor = fakeCursor(async function* (ctx: any) {
+    turn++;
+    ctx.say(`turn ${turn}`);
+    ctx.usage({ inputTokens: 100 * turn, outputTokens: turn, cacheReadTokens: 10 * turn, cacheWriteTokens: 2 * turn });
+  });
+  const adapter = adapterFor(cursor);
+  const messages: any[] = [user("go")];
+  const usages: any[] = [];
+  for (let i = 0; i < 3; i++) {
+    const r = await call(adapter, messages);
+    assert.equal(r.chunks.filter((c: any) => c.type === "usage").length, 1, "exactly one usage chunk per call");
+    usages.push(r.usage);
+    messages.push(r.assistant, user(`again ${i}`));
+  }
+  assert.deepEqual(usages, [
+    { inputTokens: 100, outputTokens: 1, cacheReadTokens: 10, cacheWriteTokens: 2 },
+    { inputTokens: 200, outputTokens: 2, cacheReadTokens: 20, cacheWriteTokens: 4 },
+    { inputTokens: 300, outputTokens: 3, cacheReadTokens: 30, cacheWriteTokens: 6 },
+  ]);
+  assert.ok(usages.every((u) => (u as any).totalTokens === undefined), "no combined total is emitted");
+});
+
+test("usage: a tool-call call reports its turn; a call with no report reports nothing", async () => {
   let got: any;
-  const cursor = fakeCursor(async function* (ctx) {
-    yield say("reading");
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("reading");
+    ctx.usage({ inputTokens: 11, outputTokens: 3, cacheReadTokens: 5, cacheWriteTokens: 0 });
     got = await ctx.callTool("read", { path: "a.txt" }, "call-1");
-    yield say("done");
+    ctx.say("done");
+  });
+  const adapter = adapterFor(cursor);
+  const s = sys("SYS");
+  const u1 = user("read a.txt");
+  const r1 = await call(adapter, [s, u1]);
+  assert.deepEqual(r1.finish, { kind: "tool-calls" });
+  assert.deepEqual(r1.usage, { inputTokens: 11, outputTokens: 3, cacheReadTokens: 5, cacheWriteTokens: 0 });
+
+  const r2 = await call(adapter, [s, u1, r1.assistant, toolResult("call-1", "FILE")]);
+  assert.deepEqual(r2.finish, { kind: "stop" });
+  assert.deepEqual(got, { content: [{ type: "text", text: "FILE" }], isError: false });
+  assert.equal(r2.usage, undefined, "the second turn reported nothing, so nothing is invented");
+  assert.equal(cursor.sends.length, 1, "no second send: the run continued");
+});
+
+test("usage: a report that arrives while no call is open is dropped, not carried forward", async () => {
+  const cursor = fakeCursor(async function* (ctx: any) {
+    await ctx.callTool("read", { path: "a" }, "c-1");
+    ctx.say("done");
+  });
+  const adapter = adapterFor(cursor);
+  const u1 = user("go");
+  const r1 = await call(adapter, [u1]);
+  assert.equal(r1.usage, undefined);
+
+  cursor.emit({ type: "usage", usage: { inputTokens: 999, outputTokens: 99, cacheReadTokens: 0, cacheWriteTokens: 0 } });
+  await tick();
+
+  const r2 = await call(adapter, [u1, r1.assistant, toolResult("c-1", "FILE")]);
+  assert.equal(r2.text, "done");
+  assert.equal(r2.usage, undefined, "the late report belongs to the closed call");
+});
+
+test("usage: four tool turns and a final answer report five independent usages", { timeout: 10_000 }, async () => {
+  const cursor = fakeCursor(async function* (ctx: any) {
+    for (let i = 1; i <= 4; i++) {
+      ctx.say(`step ${i}`);
+      ctx.usage({ inputTokens: i * 10, outputTokens: i, cacheReadTokens: 0, cacheWriteTokens: 0 });
+      await ctx.callTool("read", { path: `f${i}` }, `c-${i}`);
+    }
+    ctx.say("answer");
+    ctx.usage({ inputTokens: 50, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0 });
+  });
+  const adapter = adapterFor(cursor);
+  const messages: any[] = [user("go")];
+  const usages: any[] = [];
+  for (let i = 1; i <= 5; i++) {
+    const r = await call(adapter, messages);
+    assert.equal(r.chunks.filter((c: any) => c.type === "usage").length, 1, `call ${i} reports exactly one usage`);
+    usages.push(r.usage);
+    messages.push(r.assistant);
+    if (i <= 4) messages.push(toolResult(`c-${i}`, `R${i}`));
+  }
+  assert.deepEqual(usages.map((u) => u?.inputTokens), [10, 20, 30, 40, 50]);
+  assert.deepEqual(usages.map((u) => u?.outputTokens), [1, 2, 3, 4, 5]);
+});
+
+test("usage: the previous turn's report is not attributed to the next call", { timeout: 10_000 }, async () => {
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("one");
+    await ctx.callTool("read", { path: "a" }, "c-1");
+    // Turn 2 opens when the host delivers the tool result: a stale report arrives first.
+    ctx.usage({ inputTokens: 999, outputTokens: 99, cacheReadTokens: 0, cacheWriteTokens: 0 });
+    ctx.say("two");
+    ctx.usage({ inputTokens: 2, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 });
+  });
+  const adapter = adapterFor(cursor);
+  const u1 = user("go");
+  const r1 = await call(adapter, [u1]);
+  assert.equal(r1.usage, undefined, "turn 1 reported nothing");
+  const r2 = await call(adapter, [u1, r1.assistant, toolResult("c-1", "FILE")]);
+  assert.equal(r2.text, "two");
+  assert.deepEqual(r2.usage, { inputTokens: 2, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 }, "the stale report is discarded");
+});
+
+test("a long tool wait is not mistaken for a stall", { timeout: 10_000 }, async () => {
+  const stalls: any[] = [];
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("working");
+    await ctx.callTool("read", { path: "a" }, "c-1");
+    ctx.say("done");
+  });
+  const adapter = adapterFor(cursor, { stallTimeoutMs: 30, onStall: (_s: any, info: any) => stalls.push(info) });
+  const u1 = user("go");
+  const r1 = await call(adapter, [u1]);
+  assert.deepEqual(r1.finish, { kind: "tool-calls" });
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const r2 = await call(adapter, [u1, r1.assistant, toolResult("c-1", "FILE")]);
+  assert.equal(r2.text, "done");
+  assert.equal(stalls.length, 0, "the host holding the tool is not provider silence");
+});
+
+test("a stall records a diagnostic with the model and elapsed time", { timeout: 5_000 }, async () => {
+  const stalls: any[] = [];
+  const cursor = fakeCursor(async function* () {
+    await new Promise(() => {});
+  });
+  const adapter = adapterFor(cursor, {
+    stallTimeoutMs: 25,
+    onStall: (session: any, info: any) => stalls.push({ key: session.key, model: session.modelId, ...info }),
+  });
+  const r = await call(adapter, [user("hi")]);
+  assert.equal(r.finish.failure.code, "CURSOR_RUN_STALLED");
+  assert.equal(stalls.length, 1);
+  assert.equal(stalls[0].key, "sess-1");
+  assert.equal(stalls[0].model, "m");
+  assert.ok(stalls[0].elapsedMs >= 20);
+});
+
+test("the tool handoff stays inside its budget even with no usage report", { timeout: 5_000 }, async () => {
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("working");
+    await ctx.callTool("read", { path: "a" }, "c-1");
+  });
+  const adapter = adapterFor(cursor);
+  const started = Date.now();
+  const r = await call(adapter, [user("go")]);
+  const elapsed = Date.now() - started;
+  assert.deepEqual(r.finish, { kind: "tool-calls" });
+  assert.equal(r.usage, undefined);
+  assert.ok(elapsed < 220, `handoff took ${elapsed}ms, above the handoff budget`);
+});
+
+test("a tool call stays inside one Cursor run and gets the host's real result", async () => {
+  let got: any;
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("reading");
+    got = await ctx.callTool("read", { path: "a.txt" }, "call-1");
+    ctx.say("done");
   });
   const adapter = adapterFor(cursor);
   const s = sys("SYS");
@@ -170,7 +360,6 @@ test("a tool call stays inside one Cursor run and gets DSH's real result", async
   assert.deepEqual(r1.finish, { kind: "tool-calls" });
   assert.equal(r1.text, "reading");
   assert.deepEqual(r1.calls, [{ type: "tool-call", id: "call-1", name: "read", arguments: '{"path":"a.txt"}' }]);
-  assert.equal(r1.usage, undefined, "no usage mid-run");
 
   const r2 = await call(adapter, [s, u1, r1.assistant, toolResult("call-1", "FILE")]);
   assert.deepEqual(r2.finish, { kind: "stop" });
@@ -180,22 +369,22 @@ test("a tool call stays inside one Cursor run and gets DSH's real result", async
   assert.equal(cursor.sends.length, 1, "no second send: the run continued");
 });
 
-test("parallel tool calls are handed to DSH together", async () => {
-  const cursor = fakeCursor(async function* (ctx) {
+test("parallel tool calls are handed to the host together", async () => {
+  const cursor = fakeCursor(async function* (ctx: any) {
     const [a, b] = await Promise.all([ctx.callTool("read", { path: "a" }, "c-a"), ctx.callTool("read", { path: "b" }, "c-b")]);
-    yield say(`${a.content[0].text}+${b.content[0].text}`);
+    ctx.say(`${a.content[0].text}+${b.content[0].text}`);
   });
   const adapter = adapterFor(cursor);
   const u1 = user("read both");
   const r1 = await call(adapter, [u1]);
-  assert.deepEqual(r1.calls.map((c) => c.id), ["c-a", "c-b"]);
+  assert.deepEqual(r1.calls.map((c: any) => c.id), ["c-a", "c-b"]);
   const r2 = await call(adapter, [u1, r1.assistant, toolResult("c-a", "A"), toolResult("c-b", "B", true)]);
   assert.equal(r2.text, "A+B");
 });
 
-test("context messages DSH adds are sent with the next user text", async () => {
-  const cursor = fakeCursor(async function* () {
-    yield say("ok");
+test("context messages the host adds are sent with the next user text", async () => {
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("ok");
   });
   const adapter = adapterFor(cursor);
   const u1 = user("x");
@@ -207,9 +396,9 @@ test("context messages DSH adds are sent with the next user text", async () => {
 
 test("a user message sent while a tool runs rides along with the tool result", async () => {
   const results: any[] = [];
-  const cursor = fakeCursor(async function* (ctx) {
+  const cursor = fakeCursor(async function* (ctx: any) {
     results.push(await ctx.callTool("read", { path: "a" }, "c-1"));
-    yield say("done");
+    ctx.say("done");
   });
   const adapter = adapterFor(cursor);
   const u1 = user("go");
@@ -219,8 +408,8 @@ test("a user message sent while a tool runs rides along with the tool result", a
 });
 
 test("removed tools are dropped silently; only added ones are announced", async () => {
-  const cursor = fakeCursor(async function* () {
-    yield say("ok");
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("ok");
   });
   const adapter = adapterFor(cursor);
   const u1 = user("x");
@@ -231,20 +420,20 @@ test("removed tools are dropped silently; only added ones are announced", async 
 });
 
 test("a rewritten history (compaction) replays from scratch on a new agent", async () => {
-  const cursor = fakeCursor(async function* () {
-    yield say("ok");
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("ok");
   });
   const adapter = adapterFor(cursor);
   await call(adapter, [user("first")]);
   await call(adapter, [user("[summary] first -> ok"), user("next")]);
   assert.equal(cursor.created.length, 2);
   assert.match(cursor.sends[1], /\[summary\]/);
-  assert.equal(cursorSessionCount(), 1);
+  assert.equal(env.registry.count(), 1);
 });
 
 test("system prompt: a later system message with added lines keeps the agent, a rewrite does not", async () => {
-  const cursor = fakeCursor(async function* () {
-    yield say("ok");
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("ok");
   });
   const adapter = adapterFor(cursor);
   const s = sys("SYS");
@@ -260,15 +449,15 @@ test("system prompt: a later system message with added lines keeps the agent, a 
   assert.equal(cursor.created.length, 2, "rewritten prompt starts over");
 });
 
-test("a tool change while DSH runs a tool continues on the same agent with the new tools", async () => {
-  const cursor = fakeCursor(async function* (ctx) {
+test("a tool change while the host runs a tool continues on the same agent with the new tools", async () => {
+  const cursor = fakeCursor(async function* (ctx: any) {
     if (typeof ctx.msg === "string" && ctx.msg.startsWith("[Tool results")) {
       await ctx.callTool("x_doctor", {}, "c-x");
-      yield say("done");
+      ctx.say("done");
       return;
     }
     await ctx.callTool("read", { path: "a" }, "c-1");
-    yield say("stale run");
+    ctx.say("stale run");
   });
   const adapter = adapterFor(cursor);
   const u1 = user("go");
@@ -284,9 +473,9 @@ test("a tool change while DSH runs a tool continues on the same agent with the n
 });
 
 test("an aborted call finishes as aborted and drops the session", async () => {
-  const cursor = fakeCursor(async function* () {
+  const cursor = fakeCursor(async function* (ctx: any) {
     await new Promise((r) => setTimeout(r, 50));
-    yield say("late");
+    ctx.say("late");
   });
   const adapter = adapterFor(cursor);
   const controller = new AbortController();
@@ -294,21 +483,52 @@ test("an aborted call finishes as aborted and drops the session", async () => {
   const r = await call(adapter, [user("hi")], { signal: controller.signal });
   assert.equal(r.finish.kind, "aborted");
   assert.equal(r.finish.failure.code, "ABORTED");
-  assert.equal(cursorSessionCount(), 0);
+  assert.equal(env.registry.count(), 0);
 });
 
 test("a failed run reports a non-retryable error code", async () => {
-  const cursor = fakeCursor(async function* (ctx) {
+  const cursor = fakeCursor(async function* (ctx: any) {
     ctx.setStatus({ status: "error", error: { message: "model exploded" } });
   });
   const r = await call(adapterFor(cursor), [user("hi")]);
   assert.deepEqual(r.finish, { kind: "error", failure: { message: "model exploded", code: "CURSOR_RUN_FAILED" } });
-  assert.equal(cursorSessionCount(), 0);
+  assert.equal(env.registry.count(), 0);
 });
 
-test("catalog params: effort mapped, Fast off, context stepped down when rejected", async () => {
+test("a silent run is abandoned with its own non-retryable code", { timeout: 5_000 }, async () => {
   const cursor = fakeCursor(async function* () {
-    yield say("ok");
+    await new Promise(() => {});
+  });
+  const adapter = adapterFor(cursor, { stallTimeoutMs: 30 });
+  const r = await call(adapter, [user("hi")]);
+  assert.equal(r.finish.kind, "error");
+  assert.equal(r.finish.failure.code, "CURSOR_RUN_STALLED");
+  assert.match(r.finish.failure.message, /produced no content/);
+  assert.equal(env.registry.count(), 0);
+});
+
+test("the catalog never blocks a call, even when it is stale", { timeout: 5_000 }, async () => {
+  let catalogCalls = 0;
+  const catalog = new ModelCatalog({
+    listModels: () => {
+      catalogCalls++;
+      return new Promise<any[]>(() => {});
+    },
+    resolveApiKey: async () => "k",
+    freshMs: 1,
+  });
+  catalog.load({ models: catalogModels, live: true, fetchedAt: 0 });
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("ok");
+  });
+  const r = await call(adapterFor(cursor, { catalog }), [user("hi")]);
+  assert.equal(r.finish.kind, "stop");
+  assert.equal(catalogCalls, 1, "the refresh started in the background and was not awaited");
+});
+
+test("catalog params: effort mapped, Fast off, context stepped down and remembered", async () => {
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("ok");
   });
   const created: any[] = [];
   const createAgent = async (opts: any) => {
@@ -324,13 +544,8 @@ test("catalog params: effort mapped, Fast off, context stepped down when rejecte
       }),
     };
   };
-  process.env.DSH_CURSOR_CONTEXT = "max";
-  try {
-    const r = await call(adapterFor({ createAgent }), [user("hi")], { model: "claude", reasoningEffort: "low" });
-    assert.deepEqual(r.finish, { kind: "stop" });
-  } finally {
-    delete process.env.DSH_CURSOR_CONTEXT;
-  }
+  const r = await call(adapterFor({ createAgent }), [user("hi")], { model: "claude", reasoningEffort: "low" });
+  assert.deepEqual(r.finish, { kind: "stop" });
   assert.deepEqual(created[0], [
     { id: "thinking", value: "true" },
     { id: "effort", value: "low" },
@@ -338,43 +553,48 @@ test("catalog params: effort mapped, Fast off, context stepped down when rejecte
     { id: "context", value: "1m" },
   ]);
   assert.equal(created[1].at(-1).value, "300k");
+  assert.equal(env.tiers.get("claude"), "300k", "the accepted tier is remembered for the next run");
 });
 
-test("usage: a single-call run is exact, a tool-heavy run fits the context estimate", async () => {
-  const first = fakeCursor(async function* () {
-    yield say("ok");
-  });
-  const r1 = await call(adapterFor(first), [user("hello")]);
-  assert.deepEqual(r1.usage, { inputTokens: 10, outputTokens: 10, cacheReadTokens: 80, cacheWriteTokens: 10 });
-  const overhead = cursorOverhead("m");
-  assert.ok(overhead > 0 && overhead < 110);
+test("models: the advertised window is the accepted tier, with an explicit override", async () => {
+  const adapter = adapterFor(fakeCursor(async function* () {}));
+  assert.deepEqual((await adapter.listModels("cursor")).map((m: any) => m.id), ["m", "claude"]);
+  const claude = await adapter.resolveModel("cursor", "claude");
+  assert.equal(claude.name, "Claude");
+  assert.equal(claude.context.contextWindow, 1_000_000);
+  assert.equal(claude.systemPromptUpdate, "in-history");
+  assert.deepEqual(claude.reasoning.efforts.map((e: any) => e.id), ["off", "low", "high"]);
+  assert.equal((await adapter.resolveModel("cursor", "m")).reasoning, undefined);
+  assert.equal((await adapter.resolveModel("cursor", "unlisted")).name, "unlisted");
 
-  closeAllCursorSessions();
-  const cursor = fakeCursor(async function* (ctx) {
-    await ctx.callTool("read", { path: "a" }, "c-1");
-    ctx.setStatus({ status: "finished", usage: { inputTokens: 900_000, outputTokens: 2_000, cacheReadTokens: 890_000 } });
-    yield say("done");
+  const stepped = adapterFor(fakeCursor(async function* () {}), { tiers: new ContextTierStore({ claude: "300k" }) });
+  assert.equal((await stepped.resolveModel("cursor", "claude")).context.contextWindow, 300_000);
+
+  const overridden = adapterFor(fakeCursor(async function* () {}), { policy: { ...DEFAULT_POLICY, contextWindow: 400_000 } });
+  assert.equal((await overridden.resolveModel("cursor", "claude")).context.contextWindow, 400_000);
+
+  const duplicated = [...catalogModels, { id: "auto-smart", displayName: "Auto" }, { id: "default", displayName: "Auto" }];
+  const autosCatalog = new ModelCatalog({ listModels: async () => duplicated, resolveApiKey: async () => "k" });
+  autosCatalog.load({ models: duplicated, live: true, fetchedAt: Date.now() });
+  const autos = adapterFor(fakeCursor(async function* () {}), { catalog: autosCatalog });
+  assert.deepEqual((await autos.listModels("cursor")).map((m: any) => m.name), ["M", "Claude", "Auto (auto-smart)", "Auto (default)"]);
+
+  const offline = adapterFor(fakeCursor(async function* () {}), {
+    catalog: new ModelCatalog({ listModels: async () => { throw new Error("offline"); }, resolveApiKey: async () => "k" }),
   });
-  const adapter = adapterFor(cursor);
-  const u = user("read a");
-  const c1 = await call(adapter, [u]);
-  const r2 = await call(adapter, [u, c1.assistant, toolResult("c-1", "x".repeat(400))]);
-  const fill = r2.usage.inputTokens + r2.usage.cacheReadTokens + r2.usage.cacheWriteTokens;
-  assert.ok(fill > overhead + 100 && fill < 1_000, `context fill ${fill} is the estimate, not the cumulative input`);
-  assert.equal(r2.usage.outputTokens, 2_000);
-  assert.equal(r2.usage.totalTokens, undefined);
+  assert.deepEqual((await offline.listModels("cursor")).map((m: any) => m.id), FALLBACK_MODELS.map((m) => m.id));
 });
 
 test("auxiliary calls (session titles) get their own agent and leave the session alone", async () => {
-  const cursor = fakeCursor(async function* (ctx) {
-    yield say(typeof ctx.msg === "string" && ctx.msg.includes("Title this") ? "A title" : "ok");
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say(typeof ctx.msg === "string" && ctx.msg.includes("Title this") ? "A title" : "ok");
   });
   const adapter = adapterFor(cursor);
   const u1 = user("x");
   const r1 = await call(adapter, [u1]);
   const title = await call(adapter, [user("Title this")], { purpose: "session-title", tools: [] });
   assert.equal(title.text, "A title");
-  assert.equal(cursorSessionCount(), 1, "the title agent is closed");
+  assert.equal(env.registry.count(), 1, "the title agent is closed");
   await call(adapter, [u1, r1.assistant, user("y")]);
   assert.equal(cursor.created.length, 2, "main session kept its agent");
   assert.equal(cursor.sends.at(-1), "y");
@@ -396,8 +616,8 @@ test("stop sequences are rejected instead of silently dropped", async () => {
 const imageBlock = (id: string) => ({ type: "image", attachment: { attachmentId: id, mediaType: "image/png", bytes: 3, width: 1, height: 1 } });
 
 test("user images reach Cursor as bytes and each attachment is read once", async () => {
-  const cursor = fakeCursor(async function* () {
-    yield say("seen");
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("seen");
   });
   const reads: string[] = [];
   const adapter = adapterFor(cursor, {
@@ -420,9 +640,9 @@ test("user images reach Cursor as bytes and each attachment is read once", async
 
 test("tool results carry images to Cursor; unreadable images become a note", async () => {
   let toolGot: any;
-  const cursor = fakeCursor(async function* (ctx) {
+  const cursor = fakeCursor(async function* (ctx: any) {
     toolGot = await ctx.callTool("read", { path: "shot.png" }, "c-img");
-    yield say("seen");
+    ctx.say("seen");
   });
   const adapter = adapterFor(cursor, {
     readImage: async (ref: any) => {
@@ -438,42 +658,4 @@ test("tool results carry images to Cursor; unreadable images become a note", asy
     { type: "image", data: "B64-a2", mimeType: "image/png" },
     { type: "text", text: "[image attachment not forwarded to Cursor]" },
   ]);
-});
-
-test("models: live catalog with efforts, fallback when the catalog is unavailable", async () => {
-  const adapter = adapterFor(fakeCursor(async function* () {}));
-  assert.deepEqual((await adapter.listModels("cursor")).map((m: any) => m.id), ["m", "claude"]);
-  const claude = await adapter.resolveModel("cursor", "claude");
-  assert.equal(claude.name, "Claude");
-  assert.equal(claude.context.contextWindow, 300_000);
-  assert.equal(claude.systemPromptUpdate, "in-history");
-  assert.deepEqual(claude.reasoning.efforts.map((e: any) => e.id), ["off", "low", "high"]);
-  assert.equal((await adapter.resolveModel("cursor", "m")).reasoning, undefined);
-  assert.equal((await adapter.resolveModel("cursor", "unlisted")).name, "unlisted");
-
-  const autos = adapterFor(fakeCursor(async function* () {}), {
-    listModels: async () => [...catalog, { id: "auto-smart", displayName: "Auto" }, { id: "default", displayName: "Auto" }],
-  });
-  assert.deepEqual((await autos.listModels("cursor")).map((m: any) => m.name), ["M", "Claude", "Auto (auto-smart)", "Auto (default)"]);
-  assert.equal((await autos.resolveModel("cursor", "default")).name, "Auto (default)");
-
-  const offline = adapterFor(fakeCursor(async function* () {}), {
-    listModels: async () => {
-      throw new Error("offline");
-    },
-  });
-  assert.deepEqual((await offline.listModels("cursor")).map((m: any) => m.id), FALLBACK_MODELS.map((m) => m.id));
-  const keyless = adapterFor(fakeCursor(async function* () {}), { resolveApiKey: async () => undefined });
-  assert.equal((await keyless.listModels("cursor")).length, FALLBACK_MODELS.length);
-});
-
-test("prewarm runs after a live catalog, not on the fallback catalog", async () => {
-  const warmed: any[] = [];
-  const cursor = fakeCursor(async function* () {
-    yield say("ok");
-  });
-  await adapterFor(cursor, { prewarm: (o: any) => warmed.push(o) }).listModels("cursor");
-  assert.deepEqual(warmed, [{ apiKey: "k", modelId: catalog[0].id }]);
-  await adapterFor(cursor, { prewarm: (o: any) => warmed.push(o), resolveApiKey: async () => undefined }).listModels("cursor");
-  assert.equal(warmed.length, 1);
 });
