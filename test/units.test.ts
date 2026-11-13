@@ -91,6 +91,13 @@ test("usage buckets are disjoint and exactly what the provider states", () => {
   assert.deepEqual(buckets({}), { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 });
 
+test("a run-scoped report is divided by the calls it covers", () => {
+  const run = { inputTokens: 100, outputTokens: 10, cacheReadTokens: 80, cacheWriteTokens: 10 };
+  assert.deepEqual(toTokenUsage(run, 1), { inputTokens: 100, outputTokens: 10, cacheReadTokens: 80, cacheWriteTokens: 10 });
+  assert.deepEqual(toTokenUsage(run, 5), { inputTokens: 20, outputTokens: 2, cacheReadTokens: 16, cacheWriteTokens: 2 });
+  assert.deepEqual(toTokenUsage(run, 0), { inputTokens: 100, outputTokens: 10, cacheReadTokens: 80, cacheWriteTokens: 10 }, "a zero divisor counts as one");
+});
+
 test("the usage ledger keeps one report per open call and drops the rest", async () => {
   const ledger = new UsageLedger();
   ledger.report({ inputTokens: 1 });

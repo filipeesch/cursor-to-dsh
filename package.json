@@ -1,6 +1,6 @@
 {
   "name": "cursor-to-dsh",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "DeepSeek Harness plugin: Cursor models as the `cursor` LLM provider, with one Cursor agent per DSH session",
   "author": "lukeinx",
   "repository": {

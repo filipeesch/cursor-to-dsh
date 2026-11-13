@@ -38,6 +38,8 @@ export class CursorSession {
   events: any[] = [];
   /** Read cursor into `events`, so draining a long stream stays linear. */
   eventCursor = 0;
+  /** Model calls this provider run has served; its usage report covers all of them. */
+  modelCalls = 0;
   runDone = true;
   runResult: any;
   runError: unknown;
@@ -115,7 +117,7 @@ export class CursorSession {
   }
 
   startRun(run: any): void {
-    Object.assign(this, { run, events: [], eventCursor: 0, runDone: false, runResult: undefined, runError: undefined, stall: undefined });
+    Object.assign(this, { run, events: [], eventCursor: 0, modelCalls: 0, runDone: false, runResult: undefined, runError: undefined, stall: undefined });
     this.watchdog.resume();
     void (async () => {
       try {

@@ -34,8 +34,17 @@ export function buckets(u: CursorUsage): UsageBuckets {
   };
 }
 
-/** The host shape for one request; `totalTokens` stays omitted on purpose. */
-export function toTokenUsage(u: CursorUsage): TokenUsage {
+/**
+ * The host shape for one request; `totalTokens` stays omitted on purpose.
+ *
+ * @param u - the provider's report.
+ * @param divisor - how many model calls that report covers. The provider reports once per run,
+ *   accumulated over every call the run served, so the run's total is divided by that count to
+ *   describe one request. Both operands are facts; nothing here is estimated.
+ */
+export function toTokenUsage(u: CursorUsage, divisor = 1): TokenUsage {
   const b = buckets(u);
-  return { inputTokens: b.input, outputTokens: b.output, cacheReadTokens: b.cacheRead, cacheWriteTokens: b.cacheWrite };
+  const calls = Math.max(1, Math.round(divisor) || 1);
+  const share = (value: number) => Math.max(0, Math.round(value / calls));
+  return { inputTokens: share(b.input), outputTokens: share(b.output), cacheReadTokens: share(b.cacheRead), cacheWriteTokens: share(b.cacheWrite) };
 }
