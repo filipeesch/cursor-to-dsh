@@ -81,7 +81,8 @@ function stallMessage(modelId: string, info: StallInfo): string {
 async function attachUsage(reply: Reply, session: CursorSession, waitMs: number): Promise<void> {
   const usage = await takeUsage(session.ledger, waitMs, (ms) => session.waitForChange(ms));
   session.ledger.end();
-  if (usage) reply.usage = toTokenUsage(usage);
+  // The provider reports once per run, over every call it served: describe one request.
+  if (usage) reply.usage = toTokenUsage(usage, session.modelCalls);
 }
 
 async function openSession(
@@ -231,6 +232,7 @@ export async function runTurn(options: TurnOptions, services: TurnServices): Pro
         r.call.resolve(toolResultForCursor(r.message, r.extra));
       }
     }
+    s.modelCalls += 1;
     s.touch();
     // A stall belongs to the run that stopped producing, never to the call that follows it.
     s.stall = undefined;

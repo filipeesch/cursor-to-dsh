@@ -192,7 +192,7 @@ test("one Cursor agent per session; later calls send only the new user text", as
   assert.equal(cursor.sends[1], "again", "only the new text is sent");
 });
 
-test("usage: each call reports the provider turn that produced it, never the run total", async () => {
+test("usage: a call that is its own run reports its usage exactly", async () => {
   let turn = 0;
   const cursor = fakeCursor(async function* (ctx: any) {
     turn++;
@@ -256,28 +256,30 @@ test("usage: a report that arrives while no call is open is dropped, not carried
   assert.equal(r2.usage, undefined, "the late report belongs to the closed call");
 });
 
-test("usage: four tool turns and a final answer report five independent usages", { timeout: 10_000 }, async () => {
+test("usage: a multi-call run reports once, normalized to one request", { timeout: 10_000 }, async () => {
   const cursor = fakeCursor(async function* (ctx: any) {
-    for (let i = 1; i <= 4; i++) {
-      ctx.say(`step ${i}`);
-      ctx.usage({ inputTokens: i * 10, outputTokens: i, cacheReadTokens: 0, cacheWriteTokens: 0 });
-      await ctx.callTool("read", { path: `f${i}` }, `c-${i}`);
-    }
+    ctx.say("step 1");
+    await ctx.callTool("read", { path: "a" }, "c-1");
+    ctx.say("step 2");
+    await ctx.callTool("read", { path: "b" }, "c-2");
     ctx.say("answer");
-    ctx.usage({ inputTokens: 50, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0 });
+    // One report per run, covering all three model calls.
+    ctx.usage({ inputTokens: 30_000, outputTokens: 300, cacheReadTokens: 0, cacheWriteTokens: 0 });
   });
   const adapter = adapterFor(cursor);
   const messages: any[] = [user("go")];
   const usages: any[] = [];
-  for (let i = 1; i <= 5; i++) {
+  for (let i = 1; i <= 3; i++) {
     const r = await call(adapter, messages);
-    assert.equal(r.chunks.filter((c: any) => c.type === "usage").length, 1, `call ${i} reports exactly one usage`);
     usages.push(r.usage);
     messages.push(r.assistant);
-    if (i <= 4) messages.push(toolResult(`c-${i}`, `R${i}`));
+    if (i <= 2) messages.push(toolResult(`c-${i}`, `R${i}`));
   }
-  assert.deepEqual(usages.map((u) => u?.inputTokens), [10, 20, 30, 40, 50]);
-  assert.deepEqual(usages.map((u) => u?.outputTokens), [1, 2, 3, 4, 5]);
+  assert.deepEqual(usages, [
+    undefined,
+    undefined,
+    { inputTokens: 10_000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0 },
+  ]);
 });
 
 test("usage: the previous turn's report is not attributed to the next call", { timeout: 10_000 }, async () => {
@@ -287,7 +289,8 @@ test("usage: the previous turn's report is not attributed to the next call", { t
     // Turn 2 opens when the host delivers the tool result: a stale report arrives first.
     ctx.usage({ inputTokens: 999, outputTokens: 99, cacheReadTokens: 0, cacheWriteTokens: 0 });
     ctx.say("two");
-    ctx.usage({ inputTokens: 2, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 });
+    // This run served two calls by now, so the report is normalized to one request.
+    ctx.usage({ inputTokens: 20, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 });
   });
   const adapter = adapterFor(cursor);
   const u1 = user("go");
@@ -295,7 +298,7 @@ test("usage: the previous turn's report is not attributed to the next call", { t
   assert.equal(r1.usage, undefined, "turn 1 reported nothing");
   const r2 = await call(adapter, [u1, r1.assistant, toolResult("c-1", "FILE")]);
   assert.equal(r2.text, "two");
-  assert.deepEqual(r2.usage, { inputTokens: 2, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 }, "the stale report is discarded");
+  assert.deepEqual(r2.usage, { inputTokens: 10, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 }, "the stale report is discarded and the real one is normalized");
 });
 
 test("a long tool wait is not mistaken for a stall", { timeout: 10_000 }, async () => {
