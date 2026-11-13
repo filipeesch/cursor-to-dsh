@@ -27,6 +27,7 @@ export const ERROR_CODES = {
   error: "CURSOR_RUN_FAILED",
   aborted: "ABORTED",
   missingKey: "MISSING_CREDENTIAL",
+  stalled: "CURSOR_RUN_STALLED",
 } as const;
 
 /** Push-to-pull bridge: the turn pushes chunks, the adapter's generator pulls them. */

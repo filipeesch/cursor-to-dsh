@@ -1,5 +1,5 @@
 /**
- * Cursor catalog -> DSH model info, and DSH reasoning efforts -> Cursor model params.
+ * Cursor catalog -> host model info, and host reasoning efforts -> Cursor model params.
  *
  * Cursor describes each model with parameter definitions (`thinking`, `effort`, `fast`,
  * `context`, ...) whose allowed values differ per model. Everything here works from those
@@ -21,6 +21,20 @@ export interface CatalogModel {
   parameters?: ParamDef[];
   variants?: unknown[];
 }
+
+/** The provider's priority-latency mode: `off` (default), `on`, or leave it to Cursor. */
+export type FastMode = "auto" | "on" | "off";
+
+/** How the plugin chooses model parameters and what it advertises back to the host. */
+export interface ModelPolicy {
+  /** Context tier preference: `min`, `max`, or an offered value such as `300k`. */
+  context: string;
+  /** Context window advertised to the host: `auto` follows the effective tier. */
+  contextWindow: "auto" | number;
+  fast: FastMode;
+}
+
+export const DEFAULT_POLICY: ModelPolicy = { context: "max", contextWindow: "auto", fast: "off" };
 
 const LEVEL_RANK: Record<string, number> = {
   none: 0,
@@ -66,23 +80,34 @@ function tiers(def: ParamDef | undefined): { value: string; tokens: number }[] {
     .sort((a, b) => a.tokens - b.tokens);
 }
 
-/** Plugin `context` config; `DSH_CURSOR_CONTEXT` overrides it. */
-let contextPreference = "min";
-
-export function setContextPreference(value: string | undefined): void {
-  contextPreference = value?.trim() || "min";
-}
-
-/** `min` (default), `max`, or an offered value such as `300k`. Unknown values mean `min`. */
+/** `max` (default), `min`, or an offered value such as `300k`. Unknown values mean `min`. */
 export function preferredContext(
   def: ParamDef | undefined,
-  pref = process.env.DSH_CURSOR_CONTEXT ?? contextPreference,
+  pref: string = DEFAULT_POLICY.context,
 ): { value: string; tokens: number } | undefined {
   const all = tiers(def);
   if (!all.length) return undefined;
   const want = pref.trim().toLowerCase();
   if (want === "max") return all[all.length - 1];
+  if (want === "min") return all[0];
   return all.find((t) => t.value.toLowerCase() === want) ?? all[0];
+}
+
+/**
+ * The tier to request: the one the provider already accepted for this model, else the
+ * preference. An accepted value the catalog no longer offers is ignored.
+ */
+export function contextTierValue(
+  model: any,
+  accepted: string | undefined,
+  pref: string = DEFAULT_POLICY.context,
+): string | undefined {
+  const def = find(defsOf(model), "context");
+  if (accepted) {
+    const match = tiers(def).find((t) => t.value.toLowerCase() === accepted.toLowerCase());
+    if (match) return match.value;
+  }
+  return preferredContext(def, pref)?.value;
 }
 
 /**
@@ -103,9 +128,6 @@ export function isRejectedParams(message: unknown): boolean {
   return typeof message === "string" && /invalid parameters for registry model/i.test(message);
 }
 
-/** Context tier that worked after a rejection, per model id, for the life of the process. */
-export const workingContext = new Map<string, string>();
-
 /** Cursor effort value for a level: exact match, else the nearest lower, else the lowest. */
 export function effortFor(offered: string[], level: string): string | undefined {
   const target = LEVEL_RANK[level];
@@ -121,7 +143,12 @@ export function effortFor(offered: string[], level: string): string | undefined 
  * Explicit Cursor params for one request. Without them Cursor picks its own defaults,
  * including Fast (priority pricing) and a smaller context than the catalog offers.
  */
-export function modelParams(model: any, reasoning: string | undefined): Param[] | undefined {
+export function modelParams(
+  model: any,
+  reasoning: string | undefined,
+  policy: ModelPolicy = DEFAULT_POLICY,
+  accepted?: string,
+): Param[] | undefined {
   const defs = defsOf(model);
   const params: Param[] = [];
   const off = !reasoning || reasoning === "off";
@@ -142,10 +169,13 @@ export function modelParams(model: any, reasoning: string | undefined): Param[] 
   }
 
   const fast = find(defs, "fast");
-  if (fast && values(fast).includes("false")) params.push({ id: fast.id, value: "false" });
+  if (fast) {
+    const wanted = policy.fast === "on" ? "true" : policy.fast === "off" ? "false" : undefined;
+    if (wanted && values(fast).includes(wanted)) params.push({ id: fast.id, value: wanted });
+  }
 
-  const context = preferredContext(find(defs, "context"));
-  if (context) params.push({ id: "context", value: context.value });
+  const context = contextTierValue(model, accepted, policy.context);
+  if (context) params.push({ id: "context", value: context });
 
   return params.length ? params : undefined;
 }
@@ -160,7 +190,7 @@ function effortName(id: string): string {
 }
 
 /**
- * DSH reasoning efforts for a model, least to greatest: Cursor's own effort values, with
+ * Host reasoning efforts for a model, least to greatest: Cursor's own effort values, with
  * `off` when the model can turn reasoning off. Undefined for models without reasoning params.
  */
 export function reasoningInfo(model: any): { efforts: { id: string; name: string }[]; defaultEffort?: string } | undefined {
@@ -186,8 +216,20 @@ export function modelNames(models: CatalogModel[]): Map<string, string> {
   return new Map(models.map((m) => [m.id, count.get(base(m))! > 1 ? `${base(m)} (${m.id})` : base(m)]));
 }
 
-export function contextWindow(model: any): number {
-  return preferredContext(find(defsOf(model), "context"))?.tokens ?? 200_000;
+/** The context window for one model: the accepted tier when known, else the preference. */
+export function contextWindow(model: any, accepted?: string, pref?: string): number {
+  const def = find(defsOf(model), "context");
+  if (accepted) {
+    const match = tiers(def).find((t) => t.value.toLowerCase() === accepted.toLowerCase());
+    if (match) return match.tokens;
+  }
+  return preferredContext(def, pref)?.tokens ?? 200_000;
+}
+
+/** What the host meters against: an explicit override, else the effective tier. */
+export function advertisedContextWindow(model: any, accepted: string | undefined, policy: ModelPolicy = DEFAULT_POLICY): number {
+  if (policy.contextWindow !== "auto") return policy.contextWindow;
+  return contextWindow(model, accepted, policy.context);
 }
 
 /** Shown until the live catalog loads (no key yet, or offline). */
