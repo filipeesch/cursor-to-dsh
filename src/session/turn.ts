@@ -102,7 +102,12 @@ async function openSession(
   s.systemPrompt = t.systemPrompt;
   const { local } = syncTools(s, t.tools);
   s.agent = await services.createAgent({
-    model: { id: modelId, ...(params?.length ? { params } : {}) },
+    model: {
+      id: modelId,
+      ...(params?.length ? { params } : {}),
+      // Only an explicit policy turns on the provider's extended-context mode.
+      ...(services.policy.maxMode === "on" ? { maxMode: true } : {}),
+    },
     apiKey,
     // Always "mcp": host tools are MCP custom tools, and tools can be added later.
     tools: ["mcp"],

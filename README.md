@@ -92,6 +92,10 @@ The defaults work as they are. To change them, override this plugin's row in the
     apiKeyEnv: CURSOR_API_KEY
     context: max
     contextWindow: auto
+    contextWindows:
+      "*": 1000000
+      deepseek-v41-flash-1017: 1000000
+    maxMode: "off"
     fast: "off"
     stallTimeoutMs: 120000
 ```
@@ -101,7 +105,9 @@ The defaults work as they are. To change them, override this plugin's row in the
 | `apiKeyEnv` | `CURSOR_API_KEY` | | Credential / environment variable that holds the Cursor API key |
 | `apiKey` | none | | Plain-text key; not recommended |
 | `context` | `max` | `DSH_CURSOR_CONTEXT` | Context tier requested from Cursor: `min`, `max`, or an offered value such as `300k`. A rejected tier steps down automatically and the accepted tier is remembered |
-| `contextWindow` | `auto` | | Context window reported to the host: `auto` follows the accepted tier, or give a token count such as `400000` |
+| `contextWindow` | `auto` | | Global context window reported to the host: `auto` follows the accepted tier, or give a token count such as `400000` |
+| `contextWindows` | none | | Per-model window in tokens; `"*"` covers every model without its own entry. Most specific wins: model entry, `"*"`, `contextWindow`, accepted tier, then the documented default (`200000`) |
+| `maxMode` | `off` | | Cursor Max Mode, the extended-context mode Cursor bills differently: `off` never requests a Max-Mode-only tier, `on` requests the largest tier with the flag, `auto` leaves it to Cursor's catalog |
 | `fast` | `off` | | Cursor Fast (priority, higher-cost) mode: `off`, `on`, or `auto` to leave it to Cursor |
 | `stallTimeoutMs` | `120000` | `DSH_CURSOR_STALL_TIMEOUT_MS` | Milliseconds without provider content before a run is abandoned; `0` disables the watchdog |
 | `cwd` | session working directory | `DSH_CURSOR_CWD` | Cursor agent working directory |
@@ -117,7 +123,8 @@ Other environment variables:
 - File attachments, offloaded images and unreadable images are not forwarded to Cursor; they become a placeholder note. Replaying history carries only the last user message's images.
 - Usage is reported per provider turn. When Cursor reports nothing for a call, the host is told nothing for that call; the plugin never invents a number. A report that arrives after its call closed, or before the next call has produced content of its own turn, is discarded instead of being attributed to the wrong call.
 - A tool call is handed to DSH within 100 ms. Part of that budget (40 ms) is reserved for catching the turn's usage report, so a slow report can cost the numbers for that call but never delays the tools.
-- The reported context window is the tier the plugin requested. If the Cursor account enforces a smaller window than the catalog advertises, the host meter still follows the requested tier.
+- Not every Cursor model publishes a context tier: 14 of the 26 in the current catalog do not, including `deepseek-v41-flash-1017` and the `auto` entries. Those models are advertised with the documented default (`200000`) unless `contextWindows` names them; the default is a placeholder, not a capacity measured from the provider.
+- Max Mode is the tier Cursor offers at the largest context, and it is billed differently. It stays off unless `maxMode` says otherwise, so `context: max` lands on the largest tier that runs without it.
 - `stop` is not supported (`UNSUPPORTED_OPTION`); `temperature` and `maxTokens` are ignored.
 
 ## Development

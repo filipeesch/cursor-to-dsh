@@ -73,7 +73,7 @@ export class CursorAdapter extends LlmAdapter {
       id: model,
       name: modelNames(models).get(model) ?? model,
       inputModalities: this.modalities(),
-      context: { contextWindow: advertisedContextWindow(entry, accepted, this.deps.policy) },
+      context: { contextWindow: advertisedContextWindow(resolveModelId(model), entry, accepted, this.deps.policy) },
       systemPromptUpdate: "in-history",
     };
     const reasoning = reasoningInfo(entry);

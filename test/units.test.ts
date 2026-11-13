@@ -225,28 +225,33 @@ test("the accepted context tier is remembered and invalid entries are ignored", 
 
 test("settings resolve with documented defaults and tolerate bad values", () => {
   const base = resolveSettings(undefined, {});
-  assert.deepEqual(base.policy, { context: "max", contextWindow: "auto", fast: "off" });
+  assert.deepEqual(base.policy, { context: "max", contextWindow: "auto", contextWindows: {}, maxMode: "off", fast: "off" });
   assert.equal(base.stallTimeoutMs, 120_000);
 
   const tuned = resolveSettings(
-    { apiKeyEnv: "K", context: "300k", contextWindow: "400000", fast: "on", stallTimeoutMs: 5_000 } as any,
+    { apiKeyEnv: "K", context: "300k", contextWindow: "400000", fast: "on", maxMode: "on", stallTimeoutMs: 5_000 } as any,
     { DSH_CURSOR_CONTEXT: "min", DSH_CURSOR_STALL_TIMEOUT_MS: "9000" },
   );
-  assert.deepEqual(tuned.policy, { context: "min", contextWindow: 400_000, fast: "on" });
+  assert.deepEqual(tuned.policy, { context: "min", contextWindow: 400_000, contextWindows: {}, maxMode: "on", fast: "on" });
   assert.equal(tuned.stallTimeoutMs, 9_000, "the environment wins over the config");
 
-  const bad = resolveSettings({ apiKeyEnv: "K", context: "", contextWindow: "nope", fast: "sometimes", stallTimeoutMs: -1 } as any, {});
-  assert.deepEqual(bad.policy, { context: "max", contextWindow: "auto", fast: "off" });
+  const bad = resolveSettings({ apiKeyEnv: "K", context: "", contextWindow: "nope", fast: "sometimes", maxMode: "maybe", stallTimeoutMs: -1 } as any, {});
+  assert.deepEqual(bad.policy, { context: "max", contextWindow: "auto", contextWindows: {}, maxMode: "off", fast: "off" });
   assert.equal(bad.stallTimeoutMs, 120_000);
+
+  const mapped = resolveSettings(
+    { apiKeyEnv: "K", contextWindows: { deepseek: 1_000_000, "*": "500000", bad: -3, alsoBad: "nope" } } as any,
+    {},
+  );
+  assert.deepEqual(mapped.policy.contextWindows, { deepseek: 1_000_000, "*": 500_000 });
 });
 
-test("the advertised window follows the accepted tier unless it is set explicitly", async () => {
-  const { contextWindow } = await import("../src/models.ts");
+test("the advertised window follows the accepted tier unless it is set explicitly", () => {
   const model = { parameters: [{ id: "context", values: [{ value: "200k" }, { value: "300k" }, { value: "1m" }] }] };
-  assert.equal(advertisedContextWindow(model, undefined, DEFAULT_POLICY), 1_000_000);
-  assert.equal(advertisedContextWindow(model, "300k", DEFAULT_POLICY), 300_000);
-  assert.equal(advertisedContextWindow(model, "300k", { ...DEFAULT_POLICY, contextWindow: 400_000 }), 400_000);
-  assert.equal(contextWindow({}), 200_000, "a model without tiers keeps the generic window");
+  assert.equal(advertisedContextWindow("m", model, undefined, DEFAULT_POLICY), 1_000_000);
+  assert.equal(advertisedContextWindow("m", model, "300k", DEFAULT_POLICY), 300_000);
+  assert.equal(advertisedContextWindow("m", model, "300k", { ...DEFAULT_POLICY, contextWindow: 400_000 }), 400_000);
+  assert.equal(advertisedContextWindow("m", {}, undefined, DEFAULT_POLICY), 200_000, "a model without tiers keeps the documented default");
 });
 
 test("Reply emits balanced DSH blocks, usage, then one finish", async () => {

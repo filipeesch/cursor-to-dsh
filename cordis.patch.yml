@@ -7,5 +7,9 @@
         apiKeyEnv: CURSOR_API_KEY
         context: max
         contextWindow: auto
+        # Per-model windows, in tokens; "*" covers models whose catalog entry publishes no tier.
+        contextWindows: {}
+        # Cursor Max Mode (extended context, billed differently): off | on | auto.
+        maxMode: "off"
         fast: "off"
         stallTimeoutMs: 120000
