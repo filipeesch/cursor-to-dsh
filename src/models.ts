@@ -19,22 +19,45 @@ export interface CatalogModel {
   id: string;
   displayName?: string;
   parameters?: ParamDef[];
-  variants?: unknown[];
+  variants?: CatalogVariant[];
+}
+
+/** One selectable combination of parameters, and whether Cursor only offers it in Max Mode. */
+export interface CatalogVariant {
+  params?: Param[];
+  displayName?: string;
+  isMaxMode?: boolean;
 }
 
 /** The provider's priority-latency mode: `off` (default), `on`, or leave it to Cursor. */
 export type FastMode = "auto" | "on" | "off";
 
+/** Cursor's extended-context mode: never entered implicitly. */
+export type MaxMode = "auto" | "on" | "off";
+
+/** Advertised when nothing describes a model; documented as a default, not a capacity. */
+export const DEFAULT_CONTEXT_WINDOW = 200_000;
+
 /** How the plugin chooses model parameters and what it advertises back to the host. */
 export interface ModelPolicy {
   /** Context tier preference: `min`, `max`, or an offered value such as `300k`. */
   context: string;
-  /** Context window advertised to the host: `auto` follows the effective tier. */
+  /** Global context window advertised to the host: `auto` follows the effective tier. */
   contextWindow: "auto" | number;
+  /** Per-model advertised windows; `"*"` covers models the catalog does not describe. */
+  contextWindows: Record<string, number>;
+  /** Whether the provider's extended-context mode may be used at all. */
+  maxMode: MaxMode;
   fast: FastMode;
 }
 
-export const DEFAULT_POLICY: ModelPolicy = { context: "max", contextWindow: "auto", fast: "off" };
+export const DEFAULT_POLICY: ModelPolicy = {
+  context: "max",
+  contextWindow: "auto",
+  contextWindows: {},
+  maxMode: "off",
+  fast: "off",
+};
 
 const LEVEL_RANK: Record<string, number> = {
   none: 0,
@@ -93,21 +116,46 @@ export function preferredContext(
   return all.find((t) => t.value.toLowerCase() === want) ?? all[0];
 }
 
+/** Variants the catalog publishes for this model. */
+function variantsOf(model: any): CatalogVariant[] {
+  const variants = model?.variants;
+  return Array.isArray(variants) ? (variants as CatalogVariant[]) : [];
+}
+
 /**
- * The tier to request: the one the provider already accepted for this model, else the
- * preference. An accepted value the catalog no longer offers is ignored.
+ * Whether the only catalog variants that carry this tier require Max Mode. A tier the catalog
+ * does not describe, or a catalog that carries no marking, is not treated as requiring it.
+ */
+export function requiresMaxMode(model: any, contextValue: string): boolean {
+  const matching = variantsOf(model).filter((v) =>
+    (v.params ?? []).some((p) => p?.id?.trim() === "context" && String(p?.value ?? "").trim().toLowerCase() === contextValue.toLowerCase()),
+  );
+  return matching.length > 0 && matching.every((v) => v.isMaxMode === true);
+}
+
+/**
+ * The tier to request: the one the provider already accepted for this model when the Max Mode
+ * policy still allows it, else the preference over the tiers the policy allows. An accepted
+ * value the catalog no longer offers is ignored.
  */
 export function contextTierValue(
   model: any,
   accepted: string | undefined,
   pref: string = DEFAULT_POLICY.context,
+  maxMode: MaxMode = DEFAULT_POLICY.maxMode,
 ): string | undefined {
   const def = find(defsOf(model), "context");
+  const allowed = (value: string) => maxMode !== "off" || !requiresMaxMode(model, value);
   if (accepted) {
     const match = tiers(def).find((t) => t.value.toLowerCase() === accepted.toLowerCase());
-    if (match) return match.value;
+    if (match && allowed(match.value)) return match.value;
   }
-  return preferredContext(def, pref)?.value;
+  const usable = tiers(def).filter((t) => allowed(t.value));
+  if (!usable.length) return undefined;
+  const want = pref.trim().toLowerCase();
+  if (want === "max") return usable[usable.length - 1].value;
+  if (want === "min") return usable[0].value;
+  return (usable.find((t) => t.value.toLowerCase() === want) ?? usable[0]).value;
 }
 
 /**
@@ -174,7 +222,7 @@ export function modelParams(
     if (wanted && values(fast).includes(wanted)) params.push({ id: fast.id, value: wanted });
   }
 
-  const context = contextTierValue(model, accepted, policy.context);
+  const context = contextTierValue(model, accepted, policy.context, policy.maxMode);
   if (context) params.push({ id: "context", value: context });
 
   return params.length ? params : undefined;
@@ -216,20 +264,27 @@ export function modelNames(models: CatalogModel[]): Map<string, string> {
   return new Map(models.map((m) => [m.id, count.get(base(m))! > 1 ? `${base(m)} (${m.id})` : base(m)]));
 }
 
-/** The context window for one model: the accepted tier when known, else the preference. */
-export function contextWindow(model: any, accepted?: string, pref?: string): number {
-  const def = find(defsOf(model), "context");
-  if (accepted) {
-    const match = tiers(def).find((t) => t.value.toLowerCase() === accepted.toLowerCase());
-    if (match) return match.tokens;
-  }
-  return preferredContext(def, pref)?.tokens ?? 200_000;
+/** Tokens for one offered tier value. */
+function tierTokens(model: any, value: string): number | undefined {
+  return tiers(find(defsOf(model), "context")).find((t) => t.value.toLowerCase() === value.toLowerCase())?.tokens;
 }
 
-/** What the host meters against: an explicit override, else the effective tier. */
-export function advertisedContextWindow(model: any, accepted: string | undefined, policy: ModelPolicy = DEFAULT_POLICY): number {
+/**
+ * What the host meters against. The most specific configured value wins: the model's own entry,
+ * the wildcard, the global value, then the tier the provider accepted, then the documented
+ * default for models the catalog does not describe.
+ */
+export function advertisedContextWindow(
+  modelId: string,
+  model: any,
+  accepted: string | undefined,
+  policy: ModelPolicy = DEFAULT_POLICY,
+): number {
+  const specific = policy.contextWindows?.[modelId] ?? policy.contextWindows?.["*"];
+  if (typeof specific === "number" && specific > 0) return specific;
   if (policy.contextWindow !== "auto") return policy.contextWindow;
-  return contextWindow(model, accepted, policy.context);
+  const tier = contextTierValue(model, accepted, policy.context, policy.maxMode);
+  return (tier && tierTokens(model, tier)) || DEFAULT_CONTEXT_WINDOW;
 }
 
 /** Shown until the live catalog loads (no key yet, or offline). */

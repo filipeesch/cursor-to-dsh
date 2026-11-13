@@ -585,6 +585,35 @@ test("models: the advertised window is the accepted tier, with an explicit overr
   assert.deepEqual((await offline.listModels("cursor")).map((m: any) => m.id), FALLBACK_MODELS.map((m) => m.id));
 });
 
+test("Max Mode reaches agent creation only when the policy asks for it", async () => {
+  const offCursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("ok");
+  });
+  await call(adapterFor(offCursor, { policy: { ...DEFAULT_POLICY, maxMode: "off" } }), [user("hi")]);
+  assert.equal(offCursor.created[0].model.maxMode, undefined, "off never sends the flag");
+
+  const autoCursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("ok");
+  });
+  await call(adapterFor(autoCursor, { policy: { ...DEFAULT_POLICY, maxMode: "auto" } }), [user("hi")]);
+  assert.equal(autoCursor.created[0].model.maxMode, undefined, "auto leaves the decision to the provider");
+
+  const onCursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("ok");
+  });
+  await call(adapterFor(onCursor, { policy: { ...DEFAULT_POLICY, maxMode: "on" } }), [user("hi")]);
+  assert.equal(onCursor.created[0].model.maxMode, true, "on sends the flag");
+});
+
+test("models: a per-model window overrides what the host is told", async () => {
+  const adapter = adapterFor(fakeCursor(async function* () {}), {
+    policy: { ...DEFAULT_POLICY, contextWindows: { "*": 1_000_000, "deepseek-v41-flash-1017": 500_000 } },
+  });
+  assert.equal((await adapter.resolveModel("cursor", "deepseek-v41-flash-1017")).context.contextWindow, 500_000);
+  assert.equal((await adapter.resolveModel("cursor", "unlisted")).context.contextWindow, 1_000_000);
+  assert.equal((await adapter.resolveModel("cursor", "m")).context.contextWindow, 1_000_000, "the wildcard covers models without their own entry");
+});
+
 test("auxiliary calls (session titles) get their own agent and leave the session alone", async () => {
   const cursor = fakeCursor(async function* (ctx: any) {
     ctx.say(typeof ctx.msg === "string" && ctx.msg.includes("Title this") ? "A title" : "ok");

@@ -2,15 +2,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  DEFAULT_CONTEXT_WINDOW,
   DEFAULT_POLICY,
   advertisedContextWindow,
   contextTierValue,
-  contextWindow,
   effortFor,
   isRejectedParams,
   modelParams,
   preferredContext,
   reasoningInfo,
+  requiresMaxMode,
   resolveModelId,
   smallerContext,
 } from "../src/models.ts";
@@ -78,8 +79,8 @@ test("context preference: largest by default, exact match, env override, step-do
   }
 
   const model = { cursorParameters: [def] };
-  assert.equal(contextWindow(model), 1_000_000);
-  assert.equal(contextWindow({}), 200_000);
+  assert.equal(advertisedContextWindow("m", model, undefined), 1_000_000);
+  assert.equal(advertisedContextWindow("m", {}, undefined), DEFAULT_CONTEXT_WINDOW);
   assert.deepEqual(smallerContext(model, [{ id: "fast", value: "false" }, { id: "context", value: "1m" }]), [
     { id: "fast", value: "false" },
     { id: "context", value: "300k" },
@@ -88,16 +89,60 @@ test("context preference: largest by default, exact match, env override, step-do
   assert.ok(isRejectedParams('Invalid parameters for registry model: "m"'));
 });
 
-test("the accepted tier wins over the preference and feeds the advertised window", () => {
+const tiered = {
+  cursorParameters: [{ id: "context", values: v("300k", "1m") }],
+  variants: [
+    { params: [{ id: "context", value: "300k" }], isMaxMode: false },
+    { params: [{ id: "context", value: "1m" }], isMaxMode: true },
+  ],
+};
+const undescribed = { cursorParameters: [{ id: "reasoning_effort", values: v("low", "high") }] };
+
+test("the accepted tier wins over the preference when the policy allows it", () => {
   const model = { cursorParameters: [{ id: "context", values: v("200k", "300k", "1m") }] };
   assert.equal(contextTierValue(model, undefined, "max"), "1m");
   assert.equal(contextTierValue(model, "300k", "max"), "300k");
   assert.equal(contextTierValue(model, "gone", "max"), "1m");
   assert.deepEqual(modelParams(model, "high", { ...DEFAULT_POLICY, context: "min" }, "300k"), [{ id: "context", value: "300k" }]);
+});
 
-  assert.equal(advertisedContextWindow(model, undefined), 1_000_000);
-  assert.equal(advertisedContextWindow(model, "300k"), 300_000);
-  assert.equal(advertisedContextWindow(model, "300k", { ...DEFAULT_POLICY, contextWindow: 400_000 }), 400_000);
+test("Max Mode is off by default: the largest non-Max tier is chosen and advertised", () => {
+  assert.deepEqual(modelParams(tiered, "high").filter((p) => p.id === "context"), [{ id: "context", value: "300k" }]);
+  assert.equal(advertisedContextWindow("claude", tiered, undefined), 300_000);
+
+  const on = { ...DEFAULT_POLICY, maxMode: "on" as const };
+  assert.deepEqual(modelParams(tiered, "high", on).filter((p) => p.id === "context"), [{ id: "context", value: "1m" }]);
+  assert.equal(advertisedContextWindow("claude", tiered, undefined, on), 1_000_000);
+
+  const auto = { ...DEFAULT_POLICY, maxMode: "auto" as const };
+  assert.equal(advertisedContextWindow("claude", tiered, undefined, auto), 1_000_000);
+  assert.equal(requiresMaxMode(tiered, "1m"), true);
+  assert.equal(requiresMaxMode(tiered, "300k"), false);
+});
+
+test("an accepted tier the policy forbids is not reused", () => {
+  assert.equal(contextTierValue(tiered, "1m", "max", "off"), "300k");
+  assert.equal(contextTierValue(tiered, "1m", "max", "on"), "1m");
+});
+
+test("a tier the catalog does not mark stays selectable while the policy is off", () => {
+  const unmarked = { cursorParameters: [{ id: "context", values: v("256k", "500k") }], variants: [] as any[] };
+  assert.equal(requiresMaxMode(unmarked, "500k"), false);
+  assert.equal(contextTierValue(unmarked, undefined, "max", "off"), "500k");
+});
+
+test("window precedence: model entry, wildcard, global value, tier, documented default", () => {
+  assert.equal(advertisedContextWindow("deepseek-v41-flash-1017", undescribed, undefined), DEFAULT_CONTEXT_WINDOW);
+
+  const wildcard = { ...DEFAULT_POLICY, contextWindows: { "*": 1_000_000 } };
+  assert.equal(advertisedContextWindow("deepseek-v41-flash-1017", undescribed, undefined, wildcard), 1_000_000);
+
+  const specific = { ...DEFAULT_POLICY, contextWindows: { "*": 1_000_000, "deepseek-v41-flash-1017": 500_000 } };
+  assert.equal(advertisedContextWindow("deepseek-v41-flash-1017", undescribed, undefined, specific), 500_000);
+  assert.equal(advertisedContextWindow("other", undescribed, undefined, specific), 1_000_000);
+
+  assert.equal(advertisedContextWindow("claude", tiered, undefined, { ...DEFAULT_POLICY, contextWindow: 400_000 }), 400_000);
+  assert.equal(advertisedContextWindow("claude", tiered, "1m", { ...DEFAULT_POLICY, maxMode: "on" }), 1_000_000);
 });
 
 test("DSH reasoning efforts follow Cursor's offered values, least to greatest", () => {

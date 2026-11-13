@@ -7,7 +7,7 @@ DeepSeek Harness (DSH) plugin that registers Cursor as the `cursor` LLM provider
 | Path | Responsibility |
 |---|---|
 | `src/index.ts` | Plugin entry (`name`, `inject`, `Config`, `apply`): key lookup, working directory, state files, adapter registration |
-| `src/config.ts` | Config schema and `resolveSettings`: context tier, advertised window, Fast mode, stall window, usage wait, state dir |
+| `src/config.ts` | Config schema and `resolveSettings`: context tier, advertised windows, Max Mode, Fast mode, stall window, state dir |
 | `src/adapter.ts` | `CursorAdapter extends LlmAdapter`: `stream`, `listModels`, `resolveModel`, image cache |
 | `src/transcript.ts` | Host `GenerateOptions` -> core transcript (`user` / `developer` / `assistant` / `toolResult`) |
 | `src/reply.ts` | Host `StreamChunk` output, the mirrored assistant message and the terminal error codes |
@@ -44,7 +44,7 @@ npm run check:public  # before any push to GitHub or npm publish
 
 Live check (real Cursor, no host): `CURSOR_API_KEY=... node --experimental-strip-types scripts/live.ts`. It prints each call's usage report and when it arrived, which is the measurement the per-call attribution depends on.
 
-Render the diagram after editing the SVG: `rsvg-convert -w 1680 -h 900 docs/images/flow.svg -o docs/images/flow.png`.
+Render the diagram after editing the SVG: `rsvg-convert -w 1400 -h 980 docs/images/flow.svg -o docs/images/flow.png`.
 
 ## Rules
 
@@ -55,6 +55,8 @@ Render the diagram after editing the SVG: `rsvg-convert -w 1680 -h 900 docs/imag
 - Error codes stay outside the host's default retry list; a half-finished Cursor run must not be replayed. A stalled run has its own code (`CURSOR_RUN_STALLED`).
 - Usage buckets are disjoint and `totalTokens` is omitted; the host discards a total that disagrees with the buckets. Report the provider's per-turn values only, never an estimate.
 - Never block a call on the model catalog: the request path reads the snapshot, and refresh happens out of band.
+- The Cursor SDK is pinned for the catalog metadata the plugin reads (`parameters`, `variants[].isMaxMode`); bumping it is a release decision, not a drive-by.
+- A model's context window is what the catalog publishes or what configuration names. The documented default (`200_000`) covers models the catalog does not describe; never present it as a measured capacity, and never enable Cursor Max Mode implicitly.
 - Dependencies point one way: `index -> adapter -> session/turn -> (session, increment, tools, usage-ledger, watchdog, models, usage, prompt, transcript)`. Pass collaborators in; do not add module-level singletons.
 - New behavior gets a test through `CursorAdapter.stream()` in `test/session.test.ts` or a unit test.
 - Source must stay type-strippable (no enums, no parameter properties); `lib/` is built by `tsc`, not committed.

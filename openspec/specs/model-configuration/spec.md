@@ -7,7 +7,7 @@ Defines how the plugin resolves the model parameters it sends to the provider an
 
 ### Requirement: The advertised context window is the effective one
 
-The plugin SHALL advertise the context window that the provider will actually apply, including a tier the provider accepted after rejecting an earlier one. The plugin SHALL advertise an explicit configured value when the configuration names one.
+The plugin SHALL advertise the context window that the provider will actually apply, including a tier the provider accepted after rejecting an earlier one. When configuration supplies a value, the plugin SHALL advertise the most specific configured value that applies, in this order: an entry for that model, a wildcard entry for unlisted models, then a global configured value. When the provider publishes no tier for a model and no configured value applies, the plugin SHALL advertise a documented default and SHALL document that it is a default rather than a measured capacity.
 
 #### Scenario: The provider rejected a larger tier
 
@@ -16,17 +16,34 @@ The plugin SHALL advertise the context window that the provider will actually ap
 
 #### Scenario: The window is configured explicitly
 
-- **WHEN** the configuration sets the reported context window to an explicit token count
-- **THEN** the plugin advertises that count for the model, regardless of the tier the provider offers
+- **WHEN** the configuration sets a global context window to an explicit token count
+- **THEN** the plugin advertises that count for every model without a more specific entry
+
+#### Scenario: A model has its own window
+
+- **WHEN** the configuration names a token count for a specific model
+- **THEN** that model advertises the configured count
+- **AND** the model's provider tier no longer decides the advertised value
+
+#### Scenario: A wildcard covers the models the provider does not describe
+
+- **WHEN** the provider publishes no context tier for a model and the configuration sets a wildcard entry
+- **THEN** the model advertises the wildcard count instead of the default
+
+#### Scenario: Nothing describes the model
+
+- **WHEN** the provider publishes no context tier for a model and no configured value applies
+- **THEN** the plugin advertises its documented default
+- **AND** the documentation states that this value is a default, not a capacity reported by the provider
 
 ### Requirement: The requested context tier is configurable and defaults to the largest offered
 
-The plugin SHALL request the largest context tier the model offers by default. A configuration value SHALL select a specific tier. When the provider rejects the selected tier, the plugin SHALL retry with the next smaller offered tier and remember the accepted tier for that model across process restarts.
+The plugin SHALL request the largest context tier the model offers that the Max Mode policy allows by default. A configuration value SHALL select a specific tier. When the provider rejects the selected tier, the plugin SHALL retry with the next smaller offered tier and remember the accepted tier for that model across process restarts.
 
 #### Scenario: Default configuration
 
-- **WHEN** no context tier is configured and the model offers several tiers
-- **THEN** the largest offered tier is requested
+- **WHEN** no context tier is configured, the model offers several tiers, and the Max Mode policy is off
+- **THEN** the largest tier that does not require Max Mode is requested
 
 #### Scenario: A tier is rejected
 
@@ -110,3 +127,28 @@ The plugin SHALL prepare a call from the last known catalog without waiting for 
 
 - **WHEN** the plugin loads with a persisted catalog from a previous process
 - **THEN** the first call is prepared from that catalog before any network access
+
+### Requirement: Max mode is explicit and never implied
+
+The plugin SHALL expose a Max Mode policy with three states: off, on, and provider-derived. The default SHALL be off. While the policy is off, the plugin SHALL NOT request a tier that the provider marks as requiring Max Mode, and SHALL NOT send a Max Mode flag. While the policy is on, the plugin SHALL request the largest offered tier and SHALL send the Max Mode flag. While the policy is provider-derived, the provider's own catalog SHALL decide whether the selected tier runs in Max Mode.
+
+#### Scenario: Default configuration
+
+- **WHEN** no Max Mode policy is configured and the model offers a tier that requires Max Mode and a tier that does not
+- **THEN** the tier that does not require Max Mode is requested
+- **AND** no Max Mode flag is sent
+
+#### Scenario: Max Mode is enabled
+
+- **WHEN** the policy is on and the model offers a tier that requires Max Mode
+- **THEN** that tier is requested with the Max Mode flag set
+
+#### Scenario: The policy is provider-derived
+
+- **WHEN** the policy is provider-derived and the requested tier requires Max Mode
+- **THEN** the provider's catalog decides whether the request runs in Max Mode
+
+#### Scenario: The model publishes no Max Mode information
+
+- **WHEN** the model's catalog entry carries no Max Mode marking
+- **THEN** the policy does not change the request and no error is raised
