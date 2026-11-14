@@ -2,15 +2,6 @@
   "name": "cursor-to-dsh",
   "version": "0.3.1",
   "description": "DeepSeek Harness plugin: Cursor models as the `cursor` LLM provider, with one Cursor agent per DSH session",
-  "author": "lukeinx",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/lukeinx/cursor-to-dsh.git"
-  },
-  "homepage": "https://github.com/lukeinx/cursor-to-dsh#readme",
-  "bugs": {
-    "url": "https://github.com/lukeinx/cursor-to-dsh/issues"
-  },
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -30,29 +21,34 @@
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
+    "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
     "src",
     "cordis.patch.yml",
-    "tsconfig.build.json"
+    "tsconfig.build.json",
+    "tsconfig.client.json"
   ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   },
   "engines": {
     "dsh": ">=0.2.0-rc.2"
   },
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
-    "prepare": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "build": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node scripts/build-client.mjs",
+    "prepare": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node scripts/build-client.mjs",
     "test": "node --experimental-strip-types --test test/*.test.ts",
-    "check": "tsc --noEmit",
-    "check:public": "node scripts/check-public.mjs",
-    "prepublishOnly": "npm run check && npm test && npm run build && npm run check:public"
+    "check": "tsc -p tsconfig.json && tsc -p tsconfig.client.json",
+    "smoke:client": "node scripts/smoke-client.mjs",
+    "check:public": "node scripts/check-public.mjs"
   },
   "dependencies": {
     "@cursor/sdk": "1.3.1"
@@ -64,13 +60,16 @@
     "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
     "@deepseek-ai/schemastery": "3.18.5",
     "@types/node": "22.20.5",
+    "@types/react": "^18.3.31",
+    "esbuild": "^0.24.2",
+    "react": "^18.3.1",
     "typescript": "5.9.3"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.5",
-    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2",
     "@deepseek-ai/dsh-credentials": ">=0.2.0-rc.2",
     "@deepseek-ai/dsh-launch-environment": ">=0.2.0-rc.2",
+    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2",
     "@deepseek-ai/schemastery": "~3.18.5"
   }
 }

@@ -1,56 +1,78 @@
 /**
- * Plugin configuration, resolved once at load into the policy the rest of the plugin reads.
+ * Plugin configuration, resolved into the live policy the rest of the plugin reads.
  *
- * Every option is additive: an omission keeps the documented default, and an unknown value falls
- * back to it instead of failing the plugin.
+ * Every field the settings page can change is volatile: the settings service projects volatile
+ * fields, and the loader commits a volatile-only change into the running references without a
+ * remount. An omission keeps the documented default, and an unknown value falls back to it instead
+ * of failing the plugin.
  */
 import type { Volatile } from "@deepseek-ai/cordis";
 import Schema from "@deepseek-ai/schemastery";
 
+import { DEFAULT_KEY_REF } from "./constants.ts";
 import { resolveStateDir } from "./cursor/state.ts";
-import { DEFAULT_POLICY, type FastMode, type MaxMode, type ModelPolicy } from "./models.ts";
+import { buildPolicy, type PolicyValues } from "./policy/source.ts";
+import { DEFAULT_POLICY, type ModelPolicy, type ModelSettings } from "./policy/types.ts";
 
 export interface Config {
-  /** Volatile so the settings service gives this plugin a namespace and the Models page lists Cursor. */
+  /** Volatile so the settings service exposes the reference the settings page stores the key under. */
   apiKeyEnv: Volatile<string> | string;
-  apiKey?: string;
-  /** Context tier preference for the request: `min`, `max`, or an offered value such as `300k`. */
-  context: string;
-  /** Context window advertised to the host: `auto` follows the effective tier, or a token count. */
-  contextWindow: string;
-  /** Per-model context window, in tokens; `"*"` covers models the catalog does not describe. */
-  contextWindows: Record<string, number>;
-  /** Cursor Max Mode (extended context, billed differently): `off` (default), `on`, or `auto`. */
-  maxMode: string;
-  /** Priority-latency mode: `off` (default), `on`, or `auto` to leave it to Cursor. */
-  fast: string;
+  /** Global context tier preference: max or min. */
+  context: Volatile<string>;
+  /** Periodic Cursor Max Mode policy: off, on, or auto. */
+  maxMode: Volatile<string>;
+  /** Cursor Fast (priority) mode: off, on, or auto. */
+  fast: Volatile<string>;
+  /** Per-model settings, keyed by model id; "*" covers models without their own entry. */
+  models: Volatile<Record<string, ModelSettings>>;
+  /** Whether a model with no entry of its own is enabled. */
+  newModels: Volatile<string>;
+  /** Whether the published-capacity fallback may fetch: on or off. */
+  knownContext: Volatile<string>;
   /** Provider inactivity window, in milliseconds, before a run is abandoned; 0 disables it. */
   stallTimeoutMs: number;
   /** Cursor agent working directory; default is the session's directory. */
   cwd?: string;
 }
 
+const modelEntry = Schema.object({
+  enabled: Schema.boolean().description("Whether this model is offered for selection."),
+  context: Schema.string().description("Context tier requested for this model: max, min, or one offered value such as 300k."),
+  contextWindow: Schema.number().description("Manual advertised window in tokens, used only when neither the provider tier nor the published capacity describes the model."),
+  maxMode: Schema.string().description("Max Mode policy for this model: off, on, or auto."),
+  fast: Schema.string().description("Fast mode policy for this model: off, on, or auto."),
+});
+
 export const Config: Schema<Config> = Schema.object({
-  apiKeyEnv: Schema.string().role("credential-ref").default("CURSOR_API_KEY").description("Credential / environment variable that holds the Cursor API key.").volatile(),
-  apiKey: Schema.string().role("secret").description("Cursor API key, used only when the credential and environment are empty."),
-  context: Schema.string().default(DEFAULT_POLICY.context).description("Cursor context tier: min, max, or an offered value such as 300k."),
-  contextWindow: Schema.string().default("auto").description("Context window reported to the host: auto, or a token count."),
-  contextWindows: Schema.dict(Schema.number()).default({}).description('Per-model context window in tokens; "*" covers models the catalog does not describe.'),
-  maxMode: Schema.string().default("off").description("Cursor Max Mode (extended context, billed differently): off, on, or auto."),
-  fast: Schema.string().default(DEFAULT_POLICY.fast).description("Cursor Fast (priority) mode: off, on, or auto."),
+  apiKeyEnv: Schema.string().role("credential-ref").default(DEFAULT_KEY_REF).description("Credential / environment variable that holds the Cursor API key.").volatile(),
+  context: Schema.string().default(DEFAULT_POLICY.context).description("Global context tier preference: max (largest the Max Mode policy allows) or min.").volatile(),
+  maxMode: Schema.string().default(DEFAULT_POLICY.maxMode).description("Cursor Max Mode (extended context, billed differently): off, on, or auto.").volatile(),
+  fast: Schema.string().default(DEFAULT_POLICY.fast).description("Cursor Fast (priority) mode: off, on, or auto.").volatile(),
+  models: Schema.dict(modelEntry).default({}).description('Per-model settings keyed by model id; "*" covers models without their own entry.').volatile(),
+  newModels: Schema.string().default(DEFAULT_POLICY.newModels).description("Whether a model with no entry of its own is enabled: enabled or disabled.").volatile(),
+  knownContext: Schema.string().default("on").description("Fetch published model capacities from models.dev as a fallback: on or off.").volatile(),
   stallTimeoutMs: Schema.number().default(120_000).description("Milliseconds without provider content before a run is abandoned; 0 disables the watchdog."),
   cwd: Schema.string().description("Cursor agent working directory; default is the session's directory."),
 }) as any;
 
 export const DEFAULT_STALL_TIMEOUT_MS = 120_000;
-const FAST_MODES: FastMode[] = ["auto", "on", "off"];
-const MAX_MODES: MaxMode[] = ["auto", "on", "off"];
 
 export interface Settings {
-  policy: ModelPolicy;
+  /** Read the model policy from the configuration as it currently stands. */
+  readPolicy: () => ModelPolicy;
+  /** Whether the published-capacity fallback may fetch. */
+  knownContext: () => boolean;
   stallTimeoutMs: number;
   /** Base directory for the plugin's small persisted files. */
   stateDir: string;
+}
+
+/** Read a volatile reference (or a plain value) without keeping the value for later operations. */
+function unwrap<T>(field: Volatile<T> | T | undefined): T | undefined {
+  if (field && typeof field === "object" && typeof (field as { get?: unknown }).get === "function") {
+    return (field as { get: () => T }).get();
+  }
+  return field as T | undefined;
 }
 
 function numberFrom(value: unknown, fallback: number): number {
@@ -61,43 +83,26 @@ function numberFrom(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-function fastMode(value: unknown): FastMode {
-  const text = typeof value === "string" ? value.trim().toLowerCase() : "";
-  return (FAST_MODES as string[]).includes(text) ? (text as FastMode) : DEFAULT_POLICY.fast;
-}
-
-function maxMode(value: unknown): MaxMode {
-  const text = typeof value === "string" ? value.trim().toLowerCase() : "";
-  return (MAX_MODES as string[]).includes(text) ? (text as MaxMode) : DEFAULT_POLICY.maxMode;
-}
-
-/** Keep only usable per-model windows: a model id and a positive finite token count. */
-function contextWindows(value: unknown): Record<string, number> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const out: Record<string, number> = {};
-  for (const [id, tokens] of Object.entries(value as Record<string, unknown>)) {
-    const parsed = typeof tokens === "number" ? tokens : Number(String(tokens ?? "").trim());
-    if (id.trim() && Number.isFinite(parsed) && parsed > 0) out[id.trim()] = Math.round(parsed);
-  }
-  return out;
-}
-
-function reportedWindow(value: unknown): "auto" | number {
-  const text = typeof value === "number" ? String(value) : String(value ?? "").trim();
-  if (!text || text.toLowerCase() === "auto") return "auto";
-  const parsed = Number(text.replace(/_/g, ""));
-  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : "auto";
-}
-
+/**
+ * Resolve configuration into the live readers the plugin uses.
+ * @param config - the plugin configuration, whose editable fields are volatile references.
+ * @param env - process environment, for the documented overrides.
+ * @returns readers that observe later volatile updates, plus the static settings.
+ */
 export function resolveSettings(config: Config | undefined, env: NodeJS.ProcessEnv = process.env): Settings {
-  const context = env.DSH_CURSOR_CONTEXT?.trim() || config?.context?.trim() || DEFAULT_POLICY.context;
+  const policyValues = (): PolicyValues => ({
+    context: env.DSH_CURSOR_CONTEXT?.trim() || unwrap(config?.context),
+    maxMode: unwrap(config?.maxMode),
+    fast: unwrap(config?.fast),
+    newModels: unwrap(config?.newModels),
+    models: unwrap(config?.models),
+  });
   return {
-    policy: {
-      context,
-      contextWindow: reportedWindow(config?.contextWindow),
-      contextWindows: contextWindows(config?.contextWindows),
-      maxMode: maxMode(config?.maxMode),
-      fast: fastMode(config?.fast),
+    readPolicy: () => buildPolicy(policyValues()),
+    knownContext: () => {
+      const raw = unwrap(config?.knownContext);
+      const text = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+      return !(text === "off" || text === "false" || text === "0");
     },
     stallTimeoutMs: numberFrom(env.DSH_CURSOR_STALL_TIMEOUT_MS ?? config?.stallTimeoutMs, DEFAULT_STALL_TIMEOUT_MS),
     stateDir: resolveStateDir(env),

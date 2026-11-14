@@ -7,6 +7,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { gunzipSync, gzipSync } from "node:zlib";
 
 import { debug } from "../debug.ts";
 
@@ -32,11 +33,32 @@ export function readJsonFile<T>(path: string): T | undefined {
 export function writeJsonFile(path: string, value: unknown): void {
   try {
     mkdirSync(dirname(path), { recursive: true });
-    const temporary = `${path}.${process.pid}.tmp`;
+    const temporary = path + "." + process.pid + ".tmp";
     writeFileSync(temporary, JSON.stringify(value));
     renameSync(temporary, path);
   } catch (err) {
-    debug(`could not persist ${path}: ${err instanceof Error ? err.message : String(err)}`);
+    debug("could not persist " + path + ": " + (err instanceof Error ? err.message : String(err)));
+  }
+}
+
+/** Read a gzip-compressed JSON document; anything unreadable reads as absent. */
+export function readGzipJsonFile<T>(path: string): T | undefined {
+  try {
+    return JSON.parse(gunzipSync(readFileSync(path)).toString("utf8")) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Replace a gzip-compressed JSON document atomically; a write failure never affects a call. */
+export function writeGzipJsonFile(path: string, value: unknown): void {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    const temporary = path + "." + process.pid + ".tmp";
+    writeFileSync(temporary, gzipSync(Buffer.from(JSON.stringify(value), "utf8")));
+    renameSync(temporary, path);
+  } catch (err) {
+    debug("could not persist " + path + ": " + (err instanceof Error ? err.message : String(err)));
   }
 }
 

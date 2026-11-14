@@ -7,7 +7,7 @@
  */
 import { asObject } from "../prompt/content.ts";
 import { debug } from "../debug.ts";
-import type { Param } from "../models.ts";
+import type { Param } from "../model-catalog.ts";
 import { UsageLedger } from "./usage-ledger.ts";
 import { StallWatchdog, type StallInfo } from "./watchdog.ts";
 
