@@ -6,7 +6,10 @@ import { ModelCatalog } from "../src/cursor/catalog.ts";
 import { ContextTierStore } from "../src/cursor/context-tier.ts";
 import { DEFAULT_POLICY, type ModelPolicy } from "../src/policy/types.ts";
 import { FALLBACK_MODELS } from "../src/model-catalog.ts";
+import { fingerprint } from "../src/prompt/fingerprint.ts";
+import { HandoffWindow } from "../src/session/handoff-window.ts";
 import { SessionRegistry } from "../src/session/registry.ts";
+import { readRequest } from "../src/transcript.ts";
 
 /** Scripted fake Cursor agent. Each send runs `script(ctx)` as the model. */
 function fakeCursor(script: (ctx: any) => AsyncGenerator<any, any, void> | Promise<any>) {
@@ -39,6 +42,7 @@ function fakeCursor(script: (ctx: any) => AsyncGenerator<any, any, void> | Promi
           say: (text: string) => emit({ type: "assistant", message: { content: [{ type: "text", text }] } }),
           think: (text: string) => emit({ type: "thinking", text }),
           usage: (usage: any) => emit({ type: "usage", usage }),
+          delta: (update: any) => options?.onDelta?.({ update }),
           callTool: async (name: string, args: any, id: string) => {
             if (!tools[name]) throw new Error(`unknown tool ${name}`);
             return tools[name].execute(args, { toolCallId: id });
@@ -134,6 +138,8 @@ function adapterFor(cursor: { createAgent: any }, deps: any = {}) {
     catalog,
     tiers: deps.tiers ?? new ContextTierStore(),
     registry: deps.registry ?? new SessionRegistry(),
+    handoff: deps.handoff ?? new HandoffWindow(),
+    timing: deps.timing ?? { enabled: () => false, write: () => {} },
     policy: (deps.policy ?? DEFAULT_POLICY) as ModelPolicy,
     publishedWindow: deps.publishedWindow,
     stallTimeoutMs: deps.stallTimeoutMs ?? 0,
@@ -147,6 +153,8 @@ function adapterFor(cursor: { createAgent: any }, deps: any = {}) {
     catalog: env.catalog,
     tiers: env.tiers,
     registry: env.registry,
+    handoff: env.handoff,
+    timing: env.timing,
     readPolicy: () => env.policy,
     publishedWindow: (modelId: string) => env.publishedWindow?.(modelId),
     stallTimeoutMs: env.stallTimeoutMs,
@@ -338,7 +346,7 @@ test("a stall records a diagnostic with the model and elapsed time", { timeout: 
   assert.ok(stalls[0].elapsedMs >= 20);
 });
 
-test("the tool handoff stays inside its budget even with no usage report", { timeout: 5_000 }, async () => {
+test("a solo tool call is delivered without a fixed window and without waiting for usage", { timeout: 5_000 }, async () => {
   const cursor = fakeCursor(async function* (ctx: any) {
     ctx.say("working");
     await ctx.callTool("read", { path: "a" }, "c-1");
@@ -349,7 +357,8 @@ test("the tool handoff stays inside its budget even with no usage report", { tim
   const elapsed = Date.now() - started;
   assert.deepEqual(r.finish, { kind: "tool-calls" });
   assert.equal(r.usage, undefined);
-  assert.ok(elapsed < 220, `handoff took ${elapsed}ms, above the handoff budget`);
+  assert.equal(env.handoff.windowFor("m"), 0, "the window starts at zero");
+  assert.ok(elapsed < 150, `handoff took ${elapsed}ms with a zero window`);
 });
 
 test("a tool call stays inside one Cursor run and gets the host's real result", async () => {
@@ -741,3 +750,149 @@ test("tool results carry images to Cursor; unreadable images become a note", asy
     { type: "text", text: "[image attachment not forwarded to Cursor]" },
   ]);
 });
+
+test("a sibling that misses the delivery is reported to the window policy once", { timeout: 5_000 }, async () => {
+  const observed: any[] = [];
+  const records: any[] = [];
+  const handoff = {
+    windowFor: () => 0,
+    observe: (modelId: string, gapMs: number) => {
+      observed.push({ modelId, gapMs });
+      return 0;
+    },
+  };
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("two reads");
+    const first = ctx.callTool("read", { path: "a" }, "c-1");
+    // The host already received c-1 by now, so c-2 arrives after that delivery.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const second = ctx.callTool("read", { path: "b" }, "c-2");
+    const [a, b] = await Promise.all([first, second]);
+    ctx.say(`${a.content[0].text}+${b.content[0].text}`);
+  });
+  const timing = { enabled: () => true, write: (record: any) => records.push(record) };
+  const adapter = adapterFor(cursor, { handoff, timing });
+  const u1 = user("read both");
+
+  const r1 = await call(adapter, [u1]);
+  assert.deepEqual(r1.calls.map((c: any) => c.id), ["c-1"], "the first call went out alone");
+  // Let the sibling reach the session before reading what the policy was told.
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(observed.length, 1, "one late sibling is reported once");
+  assert.equal(observed[0].modelId, "m");
+  assert.ok(observed[0].gapMs > 0, "the gap is measured from the delivery");
+
+  const r2 = await call(adapter, [u1, r1.assistant, toolResult("c-1", "A")]);
+  assert.deepEqual(r2.calls.map((c: any) => c.id), ["c-2"], "the late sibling is delivered by the next call");
+  assert.ok(records.at(-1).lateSiblingMs > 0, "the next step's record shows the arrival");
+  const r3 = await call(adapter, [u1, r1.assistant, toolResult("c-1", "A"), r2.assistant, toolResult("c-2", "B")]);
+  assert.equal(r3.text, "A+B");
+  assert.equal(cursor.sends.length, 1, "the run continued: no replay and no second send");
+  assert.equal(env.registry.sessions("sess-1")[0]?.pending.length, 0, "no call is left pending");
+});
+
+test("a learned window holds a delivery long enough for a sibling to join it", { timeout: 5_000 }, async () => {
+  const records: any[] = [];
+  const cursor = fakeCursor(async function* (ctx: any) {
+    const first = ctx.callTool("read", { path: "a" }, "c-1");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const second = ctx.callTool("read", { path: "b" }, "c-2");
+    const [a, b] = await Promise.all([first, second]);
+    ctx.say(`${a.content[0].text}+${b.content[0].text}`);
+  });
+  const timing = { enabled: () => true, write: (record: any) => records.push(record) };
+  // 45 ms is a window the policy could have learned; the sibling arrives well inside it.
+  const adapter = adapterFor(cursor, { handoff: new HandoffWindow({ baseMs: 45 }), timing });
+  const r = await call(adapter, [user("read both")]);
+  assert.deepEqual(r.calls.map((c: any) => c.id), ["c-1", "c-2"], "one reply carries both calls");
+  assert.equal(records[0].windowMs, 45, "the record shows the window in effect");
+});
+
+test("a sibling too late for the ceiling leaves the window at zero", { timeout: 5_000 }, async () => {
+  const cursor = fakeCursor(async function* (ctx: any) {
+    const first = ctx.callTool("read", { path: "a" }, "c-1");
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const second = ctx.callTool("read", { path: "b" }, "c-2");
+    await Promise.all([first, second]);
+  });
+  const adapter = adapterFor(cursor);
+  await call(adapter, [user("read both")]);
+  assert.equal(env.handoff.windowFor("m"), 0, "a window that cannot cover the gap is not adopted");
+});
+
+test("telemetry: disabled attaches no per-update listener and writes nothing", async () => {
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("ok");
+  });
+  const adapter = adapterFor(cursor);
+  await call(adapter, [user("hi")]);
+  assert.equal(cursor.sendOpts[0]?.onDelta, undefined);
+});
+
+test("telemetry: a tool step and an answer step each carry their own record", { timeout: 5_000 }, async () => {
+  const records: any[] = [];
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.delta({ type: "token-delta", tokens: 7 });
+    ctx.say("reading");
+    await ctx.callTool("read", { path: "a" }, "c-1");
+    ctx.delta({ type: "step-completed", stepDurationMs: 42 });
+    // The report belongs to this call only after it produced content of its own turn.
+    ctx.say("done");
+    ctx.usage({ inputTokens: 100, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0 });
+  });
+  const timing = { enabled: () => true, write: (record: any) => records.push(record) };
+  const adapter = adapterFor(cursor, { timing });
+  const u1 = user("go");
+  const r1 = await call(adapter, [u1]);
+  const r2 = await call(adapter, [u1, r1.assistant, toolResult("c-1", "FILE")]);
+
+  assert.equal(records.length, 2, "one record per call");
+  const [toolStep, answerStep] = records;
+  assert.equal(toolStep.outcome, "tool-calls");
+  assert.equal(toolStep.reused, false);
+  assert.equal(toolStep.windowMs, 0);
+  assert.equal(toolStep.tools, 1);
+  assert.ok(toolStep.sentChars > 0);
+  assert.equal(toolStep.streamedTokens, 7, "the provider's streamed token count is kept");
+  assert.equal(toolStep.textChunks, 1, "the text delta the call delivered is counted");
+  assert.equal(toolStep.thinkingChunks, undefined, "no reasoning delta was delivered");
+  assert.ok(toolStep.preSendMs >= 0);
+  assert.ok(toolStep.firstContentMs >= 0);
+  assert.ok(toolStep.durationMs >= 0);
+  assert.equal(toolStep.usage, undefined, "a tool step carries no report");
+
+  assert.equal(answerStep.outcome, "stop");
+  assert.equal(answerStep.reused, true);
+  assert.equal(answerStep.stepDurationMs, 42);
+  assert.equal(answerStep.streamedTokens, undefined, "the per-call counters start empty");
+  assert.ok(answerStep.preSendMs >= 0);
+  assert.deepEqual(answerStep.usage, { inputTokens: 50, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0 });
+  assert.equal(cursor.sendOpts[0]?.onDelta !== undefined, true, "the listener is attached only while telemetry is on");
+  assert.ok(r2.text === "done");
+});
+
+test("telemetry: a recorder that throws never changes the call", async () => {
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("ok");
+  });
+  const timing = { enabled: () => true, write: () => { throw new Error("disk full"); } };
+  const adapter = adapterFor(cursor, { timing });
+  const r = await call(adapter, [user("hi")]);
+  assert.deepEqual(r.finish, { kind: "stop" });
+  assert.equal(r.text, "ok");
+});
+
+test("the seen snapshot is the request's own fingerprints, one pass per call", async () => {
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("ok");
+  });
+  const adapter = adapterFor(cursor);
+  const s = sys("SYS");
+  const u1 = user("x");
+  const r1 = await call(adapter, [s, u1]);
+  const session = env.registry.sessions("sess-1")[0];
+  const request = readRequest({ messages: [s, u1] }, new Map()).messages;
+  const expected = [...request.map(fingerprint), fingerprint(r1.assistant)];
+  assert.deepEqual(session.seen, expected);
+});
+

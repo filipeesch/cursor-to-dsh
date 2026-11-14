@@ -24,6 +24,7 @@ DeepSeek Harness (DSH) plugin that registers Cursor as the `cursor` LLM provider
 | `src/reply.ts` | DSH `StreamChunk` output, the mirrored assistant message and the terminal error codes |
 | `src/usage.ts` | Cursor usage -> DSH disjoint buckets (no combined total) |
 | `src/sdk.ts` | Cursor SDK access (agent, catalog, ripgrep path, prewarm) |
+| `src/warmup.ts` | Warm-up triggered at apply from the persisted catalog |
 | `src/debug.ts` | `DSH_CURSOR_DEBUG` logger |
 | `src/diagnostics.ts` | Stall trace appended to the state dir |
 | `src/cursor/catalog.ts` | Model catalog as a snapshot the request path reads synchronously, refreshed out of band |
@@ -35,7 +36,9 @@ DeepSeek Harness (DSH) plugin that registers Cursor as the `cursor` LLM provider
 | `src/session/increment.ts` | How the host's new messages map onto the live session |
 | `src/session/tools.ts` | Host tools as Cursor custom (MCP) tools, tool-set key, added-tools note |
 | `src/session/turn.ts` | One host model call end to end |
-| `src/session/usage-ledger.ts` | The provider's report for the open call, and the bounded wait for it |
+| `src/session/handoff-window.ts` | How long a tool-call delivery may hold, learned per model |
+| `src/session/timing.ts` | Per-step timing records and their best-effort sink |
+| `src/session/usage-ledger.ts` | The provider's report for the open call |
 | `src/session/watchdog.ts` | Inactivity monitor for one provider run |
 | `src/prompt/content.ts` | Shared content helpers (text, tool arguments, images) |
 | `src/prompt/render.ts` | Transcript rendering, tool results, system-prompt diffing |
@@ -58,12 +61,12 @@ DeepSeek Harness (DSH) plugin that registers Cursor as the `cursor` LLM provider
 ```bash
 npm install
 npm test         # unit tests with the fake Cursor agent, including the browser half's pure logic
-npm run check    # tsc over the host and tests, then tsc over the browser half without node types
+npm run check    # tsc over the host and tests, then the browser half without node types, then the live check
 npm run build    # lib/ for the host plus lib/client.js for the browser (wipes lib/ first)
 npm run check:public  # before any push to GitHub
 ```
 
-Live check (real Cursor, no host): `CURSOR_API_KEY=... node --experimental-strip-types scripts/live.ts`. It prints each call's usage report and when it arrived, which is the measurement the per-call attribution depends on.
+Live check (real Cursor, no host): `CURSOR_API_KEY=... node --experimental-strip-types scripts/live.ts`. It prints, per call, the provider frames with their arrival time, the assembled reply, the usage report when one arrived and the plugin's own step record — the measurement the handoff window and the usage attribution depend on.
 
 Render the diagram after editing the SVG: `rsvg-convert -w 1400 -h 980 docs/images/flow.svg -o docs/images/flow.png`.
 
@@ -74,6 +77,8 @@ Render the diagram after editing the SVG: `rsvg-convert -w 1400 -h 980 docs/imag
 - Host packages (`@deepseek-ai/cordis`, `dsh-llm`, `dsh-credentials`, `dsh-launch-environment`, `schemastery`) are `peerDependencies` + `devDependencies`, never `dependencies`: the host supplies the shared instances.
 - Keep the route id `cursor`, model ids, the `llm-cursor` row id and the `DSH_CURSOR_*` variables stable; user patches depend on them.
 - Error codes stay outside the host's default retry list; a half-finished Cursor run must not be replayed. A stalled run has its own code (`CURSOR_RUN_STALLED`).
+- A tool-call delivery never waits for a fixed period and never waits for a usage report: the collection window starts at 0 ms and grows per model only from a sibling that missed its delivery, capped at 50 ms. In PTC a turn almost always carries one tool call, so the window stays at 0.
+- Per-step telemetry is off unless the `timing` option is enabled; when disabled the plugin attaches no per-update listener and writes nothing. A record never estimates a number the provider did not state.
 - Usage buckets are disjoint and `totalTokens` is omitted; the host discards a total that disagrees with the buckets. Report the provider's per-turn values only, never an estimate.
 - Never block a call on the model catalog or on the published-capacity fetch: both are snapshots the request path reads, and refresh happens out of band.
 - The Cursor SDK is pinned for the catalog metadata the plugin reads (`parameters`, `variants[].isMaxMode`); bumping it is a release decision, not a drive-by.
@@ -82,7 +87,7 @@ Render the diagram after editing the SVG: `rsvg-convert -w 1400 -h 980 docs/imag
 - The shipped modules under `src/policy`, `src/model-tiers.ts`, `src/model-catalog.ts`, `src/catalog-payload.ts` and `src/constants.ts` are imported by both halves: keep them dependency-free (no node builtins, no SDK).
 - The catalog route is the plugin's only HTTP surface. It applies `connection.requestRejection` before answering, answers read-only JSON, and carries no credential material; without a web carrier it is never registered.
 - The browser half is built by esbuild into one module-loader factory; React and the UI primitives stay external. `src/client/**` must not import node builtins, and its logic stays hook-free where it can be tested directly.
-- Dependencies point one way: `index -> adapter -> session/turn -> (session, increment, tools, usage-ledger, watchdog, model-params, model-tiers, usage, prompt, transcript)`. Pass collaborators in; do not add module-level singletons.
+- Dependencies point one way: `index -> adapter -> session/turn -> (session, increment, tools, handoff-window, timing, usage-ledger, watchdog, model-params, model-tiers, usage, prompt, transcript)`. Pass collaborators in; do not add module-level singletons.
 - New behavior gets a test through `CursorAdapter.stream()` in `test/session.test.ts` or a unit test.
 - Source must stay type-strippable (no enums, no parameter properties); `lib/` is built by `tsc` and esbuild, not committed.
 - Documentation, code and comments are in English; no Chinese text in tracked files (`npm run check:public` enforces it).

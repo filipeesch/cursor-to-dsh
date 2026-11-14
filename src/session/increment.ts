@@ -6,7 +6,6 @@
  * system prompt, a lost run) must replay from a fresh agent.
  */
 import { imagesOf, type Image } from "../prompt/content.ts";
-import { fingerprint } from "../prompt/fingerprint.ts";
 import { incrementText } from "../prompt/render.ts";
 import type { CursorSession, PendingCall } from "./session.ts";
 
@@ -15,9 +14,14 @@ export type Plan = { kind: "fresh" } | { kind: "send"; text: string; images?: Im
 
 const sendable = (m: any) => m?.role === "user" || m?.role === "developer";
 
-export function planIncrement(s: CursorSession | undefined, messages: any[]): Plan {
+/**
+ * @param s - the session that may continue the conversation.
+ * @param messages - the host's derived history for this call.
+ * @param fingerprints - one fingerprint per message, computed once by the caller.
+ */
+export function planIncrement(s: CursorSession | undefined, messages: any[], fingerprints: readonly string[]): Plan {
   if (!s || s.closed || !s.sentFirst || messages.length <= s.seen.length) return { kind: "fresh" };
-  if (s.seen.some((fp, i) => fingerprint(messages[i]) !== fp)) return { kind: "fresh" };
+  if (s.seen.some((fp, i) => fingerprints[i] !== fp)) return { kind: "fresh" };
   const added = messages.slice(s.seen.length);
   const handed = s.pending.filter((p) => p.handed);
 

@@ -85,6 +85,7 @@ The page covers everyday use. To pin values in a profile patch instead, override
     maxMode: "off"
     fast: "off"
     knownContext: "on"
+    timing: "off"
     stallTimeoutMs: 120000
 ```
 
@@ -97,6 +98,7 @@ The page covers everyday use. To pin values in a profile patch instead, override
 | `maxMode` | `off` | | Cursor Max Mode, the extended-context mode Cursor bills differently: `off` never requests a Max-Mode-only tier, `on` requests the largest tier with the flag, `auto` leaves it to Cursor's catalog |
 | `fast` | `off` | | Cursor Fast (priority, higher-cost) mode: `off`, `on`, or `auto` to leave it to Cursor |
 | `knownContext` | `on` | | Fetch published model capacities from models.dev as the fallback: `on` or `off` |
+| `timing` | `off` | | Write one timing record per model step to the state directory: `on` or `off` |
 | `stallTimeoutMs` | `120000` | `DSH_CURSOR_STALL_TIMEOUT_MS` | Milliseconds without provider content before a run is abandoned; `0` disables the watchdog |
 | `cwd` | session working directory | `DSH_CURSOR_CWD` | Cursor agent working directory |
 
@@ -105,14 +107,14 @@ The advertised context window is resolved in this order: the provider tier in ef
 Other environment variables:
 
 - `DSH_CURSOR_DEBUG=1` writes debug lines to stderr.
-- `DSH_CURSOR_PREWARM=0` disables warm-up (the plugin pre-builds one agent in the background, saving the Cursor SDK's first ~8 seconds of setup).
-- `DSH_CURSOR_STATE_DIR` overrides where the plugin keeps its small persisted files, defaulting to the DSH home (`~/.dsh`). It stores the cached model catalog, the accepted context tier per model, the gzip-compressed published-capacity snapshot, and `stall.log`.
+- `DSH_CURSOR_PREWARM=0` disables warm-up. The plugin starts it as soon as it is applied, from the persisted catalog, so a live catalog fetch is not required first; warm-up pays the Cursor SDK's one-time per-process setup in the background instead of on the first step.
+- `DSH_CURSOR_STATE_DIR` overrides where the plugin keeps its small persisted files, defaulting to the DSH home (`~/.dsh`). It stores the cached model catalog, the accepted context tier per model, the gzip-compressed published-capacity snapshot, `stall.log`, and `timing.log` when the `timing` option is on (it grows one line per step; delete it or turn the option off).
 
 ## Known limitations
 
 - File attachments, offloaded images and unreadable images are not forwarded to Cursor; they become a placeholder note. Replaying history carries only the last user message's images.
 - Cursor reports usage **once per run**, accumulated over every model call the run made. The plugin divides that report by the number of calls the run served and reports it once, on the run's last call, so the host sees one request's worth of usage. Session totals therefore read as the run's average request rather than the sum of every call — without that division the context meter reads N times the real context and compaction triggers on a conversation that is not full. When Cursor reports nothing, the host is told nothing; the plugin never invents a number.
-- A tool call is handed to DSH within 100 ms. Part of that budget (40 ms) is reserved for catching the turn's usage report, so a slow report can cost the numbers for that call but never delays the tools.
+- A tool call is handed to DSH as soon as it is ready: the collection window starts at **0 ms** and no part of the delivery waits for a usage report. When a sibling call arrives after its turn's delivery, the plugin learns how late it was and gives that model a window that would have covered the gap — never above 50 ms, and never when the gap is too wide to cover. A turn that carries a single tool call (the common PTC case) keeps the 0 ms window. A model whose gaps fit the ceiling pays that split once and batches afterwards; a model whose gaps exceed it keeps today's behaviour, where each such turn splits.
 - Not every Cursor model publishes a context tier: 13 of the 26 in the current catalog do not, including `deepseek-v41-flash-1017` and the `auto` entries. Those models use the capacity published upstream (models.dev) when it describes them, else a manual value, else the documented default (`200000`). The published value is a capacity the upstream catalog declares, not a capacity measured from Cursor.
 - Max Mode is the tier Cursor offers at the largest context, and it is billed differently. It stays off unless `maxMode` says otherwise, so `context: max` lands on the largest tier that runs without it.
 - `stop` is not supported (`UNSUPPORTED_OPTION`); `temperature` and `maxTokens` are ignored.
@@ -122,7 +124,7 @@ Other environment variables:
 ```bash
 npm install && npm run build   # the host loads lib/ and the browser loads lib/client.js; rebuild and restart after a source change
 npm test                       # unit tests with a fake Cursor agent
-npm run check                  # type check, host and browser halves
+npm run check                  # type check, host, browser and live-check halves
 npm run check:public           # no internal links, local paths or non-English text
 CURSOR_API_KEY=... node --experimental-strip-types scripts/live.ts [model]   # real Cursor run
 ```

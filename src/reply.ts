@@ -33,6 +33,7 @@ export const ERROR_CODES = {
 /** Push-to-pull bridge: the turn pushes chunks, the adapter's generator pulls them. */
 export class ChunkQueue implements AsyncIterable<any> {
   private items: any[] = [];
+  private cursor = 0;
   private done = false;
   private waker: (() => void) | undefined;
 
@@ -55,8 +56,11 @@ export class ChunkQueue implements AsyncIterable<any> {
 
   async *[Symbol.asyncIterator](): AsyncIterator<any> {
     for (;;) {
-      while (this.items.length) yield this.items.shift();
+      // A read cursor keeps a long stream linear: shift() moves the whole array per chunk.
+      while (this.cursor < this.items.length) yield this.items[this.cursor++];
       if (this.done) return;
+      this.items.length = 0;
+      this.cursor = 0;
       await new Promise<void>((r) => (this.waker = r));
     }
   }

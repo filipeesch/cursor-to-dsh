@@ -11,7 +11,7 @@ import { currentTurnImages, textOf } from "../src/prompt/content.ts";
 import { fingerprint } from "../src/prompt/fingerprint.ts";
 import { renderTranscript, systemPromptAddition, toolResultForCursor } from "../src/prompt/render.ts";
 import { sessionKeyFor, SessionRegistry } from "../src/session/registry.ts";
-import { UsageLedger, takeUsage } from "../src/session/usage-ledger.ts";
+import { UsageLedger } from "../src/session/usage-ledger.ts";
 import { StallWatchdog } from "../src/session/watchdog.ts";
 import { ModelCatalog } from "../src/cursor/catalog.ts";
 import { ContextTierStore } from "../src/cursor/context-tier.ts";
@@ -105,7 +105,7 @@ test("a run-scoped report is divided by the calls it covers", () => {
   assert.deepEqual(toTokenUsage(run, 0), { inputTokens: 100, outputTokens: 10, cacheReadTokens: 80, cacheWriteTokens: 10 }, "a zero divisor counts as one");
 });
 
-test("the usage ledger keeps one report per open call and drops the rest", async () => {
+test("the usage ledger keeps one report per open call and drops the rest", () => {
   const ledger = new UsageLedger();
   ledger.report({ inputTokens: 1 });
   assert.equal(ledger.ready, false, "a report before any call is ignored");
@@ -116,32 +116,16 @@ test("the usage ledger keeps one report per open call and drops the rest", async
   ledger.sawContent();
   ledger.report({ inputTokens: 2 });
   assert.equal(ledger.ready, true);
-  assert.equal((await takeUsage(ledger, 0, async () => {}))!.inputTokens, 2);
-  ledger.end();
+  assert.equal(ledger.take()!.inputTokens, 2);
   assert.equal(ledger.ready, false, "taking the report leaves nothing behind");
+  ledger.end();
 
   ledger.begin();
-  assert.equal(await takeUsage(ledger, 0, async () => {}), undefined, "a call with no report waits zero and reports nothing");
+  assert.equal(ledger.take(), undefined, "a call with no report reports nothing");
   ledger.end();
   ledger.report({ inputTokens: 3 });
   assert.equal(ledger.ready, false, "a report after the call closed is discarded");
-});
-
-test("takeUsage waits for the open call's report only up to its bound", async () => {
-  const ledger = new UsageLedger();
-  ledger.begin();
-  ledger.sawContent();
-  const started = Date.now();
-  const missing = await takeUsage(ledger, 30, (ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-  assert.equal(missing, undefined);
-  assert.ok(Date.now() - started >= 25, "it waited for the report");
-
-  const quick = new UsageLedger();
-  quick.begin();
-  quick.sawContent();
-  const arriving = takeUsage(quick, 500, (ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-  setTimeout(() => quick.report({ outputTokens: 7 }), 5);
-  assert.equal((await arriving)!.outputTokens, 7);
+  assert.equal(ledger.hasContent, false);
 });
 
 test("the watchdog fires on silence, ignores keep-alives and pauses during a tool wait", async () => {
@@ -241,11 +225,16 @@ test("settings resolve into readers over the live configuration", () => {
   const base = resolveSettings(undefined, {});
   assert.equal(base.stallTimeoutMs, 120_000);
   assert.equal(base.knownContext(), true);
+  assert.equal(base.timing(), false, "telemetry is off unless configured");
   assert.deepEqual(base.readPolicy(), { context: "max", maxMode: "off", fast: "off", newModels: "enabled", models: {} });
 
   const off = resolveSettings({ knownContext: "off", stallTimeoutMs: 5_000 } as any, {});
   assert.equal(off.knownContext(), false);
   assert.equal(off.stallTimeoutMs, 5_000);
+
+  assert.equal(resolveSettings({ timing: "on" } as any, {}).timing(), true);
+  assert.equal(resolveSettings({ timing: "false" } as any, {}).timing(), false);
+  assert.equal(resolveSettings({ timing: "perhaps" } as any, {}).timing(), false, "an unusable value keeps the default");
 });
 
 test("the published-capacity snapshot round-trips through a gzip file", () => {
@@ -283,6 +272,24 @@ test("Reply emits balanced DSH blocks, usage, then one finish", async () => {
   assert.deepEqual(chunks[9].block, { type: "tool-call", id: "c1", name: "read", arguments: '{"path":"x"}' });
   assert.deepEqual(chunks.at(-1).reason, { kind: "tool-calls" });
   assert.deepEqual(reply.message.content.map((b: any) => b.type), ["thinking", "text", "toolCall"]);
+});
+
+test("the chunk queue drains a large burst in order", async () => {
+  const queue = new ChunkQueue();
+  const reply = new Reply(queue);
+  const burst = 5_000;
+  for (let i = 0; i < burst; i++) reply.text("x");
+  reply.finish("stop");
+  let deltas = 0;
+  let text = "";
+  for await (const chunk of queue) {
+    if (chunk.type === "text-delta") {
+      deltas++;
+      text += chunk.text;
+    }
+  }
+  assert.equal(deltas, burst);
+  assert.equal(text.length, burst);
 });
 
 test("Reply errors carry a non-retryable code, and a stalled run has its own", async () => {
@@ -425,7 +432,7 @@ test("an existing ripgrep path is kept, a stale one is replaced", () => {
   if (found) assert.equal(env.CURSOR_RIPGREP_PATH, found);
 });
 
-test("prewarm: one throwaway agent per process, run cancelled, agent closed, failures swallowed", async () => {
+test("prewarm: one throwaway agent per process, run cancelled, agent closed", async () => {
   resetPrewarm();
   const log: string[] = [];
   const create = async (opts: any) => {
@@ -441,10 +448,25 @@ test("prewarm: one throwaway agent per process, run cancelled, agent closed, fai
   await prewarmCursor({ apiKey: "k", modelId: "default" }, create);
   await prewarmCursor({ apiKey: "k", modelId: "other" }, create);
   assert.deepEqual(log, ["create default true", "send .", "cancel", "wait", "close"]);
-
   resetPrewarm();
-  await prewarmCursor({ apiKey: "k", modelId: "default" }, async () => {
-    throw new Error("offline");
+});
+
+test("prewarm: a failed attempt is not memoized, so the next trigger retries", async () => {
+  resetPrewarm();
+  await assert.rejects(
+    prewarmCursor({ apiKey: "k", modelId: "default" }, async () => {
+      throw new Error("offline");
+    }),
+    /offline/,
+  );
+  const retried: string[] = [];
+  await prewarmCursor({ apiKey: "k", modelId: "default" }, async (opts: any) => {
+    retried.push(opts.model.id);
+    return {
+      send: async () => ({ cancel: async () => {}, wait: async () => {} }),
+      close: () => {},
+    };
   });
+  assert.deepEqual(retried, ["default"], "the slot was released by the failure");
   resetPrewarm();
 });

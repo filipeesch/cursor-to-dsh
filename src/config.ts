@@ -29,6 +29,8 @@ export interface Config {
   newModels: Volatile<string>;
   /** Whether the published-capacity fallback may fetch: on or off. */
   knownContext: Volatile<string>;
+  /** Whether one timing record per model step is written to the state directory: on or off. */
+  timing: Volatile<string>;
   /** Provider inactivity window, in milliseconds, before a run is abandoned; 0 disables it. */
   stallTimeoutMs: number;
   /** Cursor agent working directory; default is the session's directory. */
@@ -51,6 +53,7 @@ export const Config: Schema<Config> = Schema.object({
   models: Schema.dict(modelEntry).default({}).description('Per-model settings keyed by model id; "*" covers models without their own entry.').volatile(),
   newModels: Schema.string().default(DEFAULT_POLICY.newModels).description("Whether a model with no entry of its own is enabled: enabled or disabled.").volatile(),
   knownContext: Schema.string().default("on").description("Fetch published model capacities from models.dev as a fallback: on or off.").volatile(),
+  timing: Schema.string().default("off").description("Write one timing record per model step to the plugin state directory: on or off.").volatile(),
   stallTimeoutMs: Schema.number().default(120_000).description("Milliseconds without provider content before a run is abandoned; 0 disables the watchdog."),
   cwd: Schema.string().description("Cursor agent working directory; default is the session's directory."),
 }) as any;
@@ -62,6 +65,8 @@ export interface Settings {
   readPolicy: () => ModelPolicy;
   /** Whether the published-capacity fallback may fetch. */
   knownContext: () => boolean;
+  /** Whether one timing record per model step is written. */
+  timing: () => boolean;
   stallTimeoutMs: number;
   /** Base directory for the plugin's small persisted files. */
   stateDir: string;
@@ -73,6 +78,15 @@ function unwrap<T>(field: Volatile<T> | T | undefined): T | undefined {
     return (field as { get: () => T }).get();
   }
   return field as T | undefined;
+}
+
+/** Read an on/off field; an unusable value falls back to the documented default. */
+function switchedOn(value: unknown, fallback: boolean): boolean {
+  const text = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!text) return fallback;
+  if (text === "on" || text === "true" || text === "1") return true;
+  if (text === "off" || text === "false" || text === "0") return false;
+  return fallback;
 }
 
 function numberFrom(value: unknown, fallback: number): number {
@@ -99,11 +113,8 @@ export function resolveSettings(config: Config | undefined, env: NodeJS.ProcessE
   });
   return {
     readPolicy: () => buildPolicy(policyValues()),
-    knownContext: () => {
-      const raw = unwrap(config?.knownContext);
-      const text = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-      return !(text === "off" || text === "false" || text === "0");
-    },
+    knownContext: () => switchedOn(unwrap(config?.knownContext), true),
+    timing: () => switchedOn(unwrap(config?.timing), false),
     stallTimeoutMs: numberFrom(env.DSH_CURSOR_STALL_TIMEOUT_MS ?? config?.stallTimeoutMs, DEFAULT_STALL_TIMEOUT_MS),
     stateDir: resolveStateDir(env),
   };
