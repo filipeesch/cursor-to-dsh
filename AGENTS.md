@@ -9,6 +9,7 @@ DeepSeek Harness (DSH) plugin that registers Cursor as the `cursor` LLM provider
 | `src/index.ts` | Plugin entry (`name`, `inject`, `Config`, `apply`): wiring, state files, catalog and published-capacity snapshots, catalog route, adapter registration |
 | `src/config.ts` | Config schema (every editable field volatile) and `resolveSettings`, which returns readers over the live configuration |
 | `src/constants.ts` | Provider id, package name, conventional credential reference, catalog route path, default row id |
+| `src/documented-capacities.ts` | Capacities the provider documents but never publishes, keyed by catalog id, with the source each came from |
 | `src/model-catalog.ts` | Catalog shapes, model identity, display names and the fallback model list |
 | `src/model-tiers.ts` | Context tiers, tier selection and the rejected-tier step-down |
 | `src/model-params.ts` | Catalog parameters -> the params one request carries, and reasoning efforts |
@@ -78,9 +79,9 @@ Render the diagram after editing the SVG: `rsvg-convert -w 1400 -h 980 docs/imag
 - Usage buckets are disjoint and `totalTokens` is omitted; the host discards a total that disagrees with the buckets. Report the provider's per-turn values only, never an estimate.
 - Never block a call on the model catalog or on the published-capacity fetch: both are snapshots the request path reads, and refresh happens out of band.
 - The Cursor SDK is pinned for the catalog metadata the plugin reads (`parameters`, `variants`); bumping it is a release decision, not a drive-by.
-- A model's context window is the tier in effect, then a capacity published upstream, then a manual per-model value, then the documented default. The published value is a declared capacity, never a measured one. Max Mode is legacy (Cursor removed it for usage-based pricing): never send its flag and never filter tiers by it.
+- A model's context window is the tier in effect, then a capacity published upstream, then a manual per-model value, then the capacity the provider documents in `src/documented-capacities.ts`, then the documented default. The published and documented values are declared capacities, never measured ones. Max Mode is legacy (Cursor removed it for usage-based pricing): never send its flag and never filter tiers by it.
 - The policy is read per decision (`settings.readPolicy()`), never captured at `apply` time, so a save applies without remounting the plugin. Every field the page edits is volatile; ordinary fields are invisible to settings.
-- The shipped modules under `src/policy`, `src/model-tiers.ts`, `src/model-catalog.ts`, `src/catalog-payload.ts` and `src/constants.ts` are imported by both halves: keep them dependency-free (no node builtins, no SDK).
+- The shipped modules under `src/policy`, `src/model-tiers.ts`, `src/model-catalog.ts`, `src/catalog-payload.ts`, `src/documented-capacities.ts` and `src/constants.ts` are imported by both halves: keep them dependency-free (no node builtins, no SDK).
 - The catalog route is the plugin's only HTTP surface. It applies `connection.requestRejection` before answering, answers read-only JSON, and carries no credential material; without a web carrier it is never registered.
 - The browser half is built by esbuild into one module-loader factory; React and the UI primitives stay external. `src/client/**` must not import node builtins, and its logic stays hook-free where it can be tested directly.
 - Dependencies point one way: `index -> adapter -> session/turn -> (session, increment, tools, usage-ledger, watchdog, model-params, model-tiers, usage, prompt, transcript)`. Pass collaborators in; do not add module-level singletons.

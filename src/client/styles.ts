@@ -42,7 +42,6 @@ export const STYLES = [
   ".ctd-control { display: flex; align-items: center; gap: 8px; }",
   ".ctd-control-label { color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 16px; }",
   ".ctd-chip { padding: 2px 8px; border-radius: 999px; border: 0.5px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 16px; }",
-  ".ctd-chip-dim { color: var(--dsw-alias-label-tertiary); }",
   ".ctd-note { margin: 0; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }",
   ".ctd-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }",
   ".ctd-check-label { font-size: 13px; line-height: 18px; }",

@@ -36,6 +36,7 @@ const payload: CatalogPayload = {
     { id: "deepseek", name: "DeepSeek", parameters: [], variants: [], publishedContextWindow: 1_048_576 },
     { id: "kimi", name: "Kimi", parameters: [], variants: [] },
     { id: "composer", name: "Composer", parameters: [{ id: "fast", values: [{ value: "false" }, { value: "true" }] }], variants: [] },
+    { id: "composer-2.5", name: "Composer 2.5", parameters: [{ id: "fast", values: [{ value: "false" }, { value: "true" }] }], variants: [] },
   ],
 };
 
@@ -114,7 +115,7 @@ function pageState(overrides: Partial<PageState> = {}): PageState {
 
 test("derivation follows the catalog: tiers, published capacity and the manual last resort", () => {
   const derived = derivePage(undefined, payload);
-  assert.equal(derived.rows.length, 4);
+  assert.equal(derived.rows.length, 5);
   assert.equal(derived.overrides, 0);
   assert.equal(derived.newModels, "enabled");
 
@@ -143,6 +144,12 @@ test("derivation follows the catalog: tiers, published capacity and the manual l
   const composer = row("composer", derived);
   assert.equal(composer.tierOffered, false);
   assert.equal(composer.fastOffered, true);
+
+  const documented = row("composer-2.5", derived);
+  assert.equal(documented.window.source, "documented", "the provider documents this one");
+  assert.equal(documented.window.tokens, 200_000);
+  assert.equal(documented.manualWindow.editable, true, "a manual value may still override it");
+  assert.equal(documented.manualWindow.value, 200_000);
 });
 
 test("a per-model tier overrides the automatic choice, and clearing it restores Auto", () => {
@@ -184,12 +191,27 @@ test("each model renders one line with inline segmented controls, without a Sett
   const kimi = ModelRowView({ row: row("kimi"), writable: true, handlers, segmented: FakeSegmented });
   assert.equal(findByType(kimi, FakeSegmented), undefined, "a model with no tier or fast offers no segmented control");
   assert.match(collected(kimi), /not described by the catalog/);
-  assert.match(collected(kimi), /200k/);
+  const windowInput = findByProp(kimi, (element: any) => element.props?.["aria-label"] === "Context window for Kimi");
+  assert.ok(windowInput, "the editable window is a field");
+  assert.equal(windowInput.props.value, "200000", "the field carries the window in effect");
+  assert.equal(windowInput.type, "input");
+  assert.doesNotMatch(collected(kimi), /documented/);
 
   const withFast = ModelRowView({ row: row("composer"), writable: true, handlers, segmented: FakeSegmented });
   const fast = findByType(withFast, FakeSegmented);
   assert.ok(fast, "a model that publishes fast gets the control");
   assert.deepEqual(fast.props.options.map((option: any) => option.value), ["", "off", "on"]);
+});
+
+test("a window that cannot be edited shows as a chip, with the source only in its tooltip", () => {
+  const deepseek = ModelRowView({ row: row("deepseek"), writable: true, handlers, segmented: FakeSegmented });
+  const chip = findByProp(deepseek, (element: any) => element.type === "span" && element.props?.className === "ctd-chip");
+  assert.ok(chip, "a published window has no field to live in");
+  assert.equal(collected(chip), "1,048,576", "the number only; no provenance label");
+  assert.equal(chip.props.title, "published upstream");
+
+  const composer = ModelRowView({ row: row("composer-2.5"), writable: true, handlers, segmented: FakeSegmented });
+  assert.equal(findByProp(composer, (element: any) => element.props?.className === "ctd-chip"), undefined, "the field already shows the number");
 });
 
 test("the model list states its loading and unavailable conditions", () => {
