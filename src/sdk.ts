@@ -3,6 +3,8 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { debug } from "./debug.ts";
+
 const require = createRequire(import.meta.url);
 
 /**
@@ -36,37 +38,45 @@ export async function createCursorAgent(opts: any): Promise<any> {
  * The SDK's first agent in a process pays ~8s of one-time setup (key exchange, model
  * catalog, feature flags) split between `Agent.create` and the first `send`; later agents,
  * any model, start in about a second. Pay it in the background with a throwaway agent whose
- * run is cancelled as soon as the send is accepted. Once per process; failures are ignored.
- * It works in an empty directory because the SDK scans its working directory, and the
- * host process may run from `/`.
+ * run is cancelled as soon as the send is accepted. Only a *successful* warm-up is memoized:
+ * a failed attempt leaves the slot open so the next trigger can retry. It works in an empty
+ * directory because the SDK scans its working directory, and the host process may run from `/`.
  */
 let warming: Promise<void> | undefined;
 
 export function prewarmCursor(opts: { apiKey: string; modelId: string }, create = createCursorAgent): Promise<void> {
-  warming ??= (async () => {
-    let agent: any;
-    let local: any;
-    try {
-      const cwd = join(tmpdir(), "cursor-to-dsh-warmup");
-      mkdirSync(cwd, { recursive: true });
-      local = { cwd, settingSources: [] };
-      agent = await create({ model: { id: opts.modelId }, apiKey: opts.apiKey, tools: ["mcp"], local });
-      const run = await agent.send(".");
-      await Promise.resolve(run.cancel?.()).catch(() => {});
-      await Promise.resolve(run.wait?.()).catch(() => {});
-    } catch {
-      /* warm-up is best effort */
-    } finally {
-      try {
-        agent?.close?.();
-      } catch {
-        /* ignore */
-      }
-      const id = agent?.agentId;
-      if (id) void deleteCursorAgent(id, { apiKey: opts.apiKey, local }).catch(() => {});
-    }
-  })();
+  if (!warming) {
+    warming = warmOnce(opts, create).catch((err: unknown) => {
+      // The slot is released before the rejection reaches the caller: the trigger that runs after
+      // a live catalog (the reliable one) must be able to try again.
+      warming = undefined;
+      debug("warm-up failed: " + (err instanceof Error ? err.message : String(err)));
+      throw err;
+    });
+  }
   return warming;
+}
+
+async function warmOnce(opts: { apiKey: string; modelId: string }, create: typeof createCursorAgent): Promise<void> {
+  let agent: any;
+  let local: any;
+  try {
+    const cwd = join(tmpdir(), "cursor-to-dsh-warmup");
+    mkdirSync(cwd, { recursive: true });
+    local = { cwd, settingSources: [] };
+    agent = await create({ model: { id: opts.modelId }, apiKey: opts.apiKey, tools: ["mcp"], local });
+    const run = await agent.send(".");
+    await Promise.resolve(run.cancel?.()).catch(() => {});
+    await Promise.resolve(run.wait?.()).catch(() => {});
+  } finally {
+    try {
+      agent?.close?.();
+    } catch {
+      /* ignore */
+    }
+    const id = agent?.agentId;
+    if (id) void deleteCursorAgent(id, { apiKey: opts.apiKey, local }).catch(() => {});
+  }
 }
 
 /** Test hook. */

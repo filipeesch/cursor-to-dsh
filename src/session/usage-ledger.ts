@@ -1,11 +1,12 @@
 /**
  * The provider's usage report for the call that is currently open.
  *
- * Cursor reports usage once per provider turn, at that turn's end, and one provider turn is one
- * host call. Timing alone cannot tell a turn's report from the next turn's: a report for turn N
- * can land after call N+1 has already opened. So a report is accepted only while the open call has
- * already produced provider content for its own turn — a turn's report never precedes its own
- * content, which makes an early report belong to a turn that is already closed.
+ * Cursor reports usage once per run, at the run's end, accumulated over every call the run served.
+ * Timing alone cannot tell that report from the next run's: a report for one run can land after
+ * the next call has already opened. So a report is accepted only while the open call has already
+ * produced provider content — a report never precedes its own content, which makes an early report
+ * belong to a call that is already closed. Nothing waits for a report; one that has not arrived by
+ * the end of a call is simply not reported.
  */
 import type { CursorUsage } from "../usage.ts";
 
@@ -53,22 +54,4 @@ export class UsageLedger {
     this.value = undefined;
     return value;
   }
-}
-
-/**
- * Wait up to `waitMs` for the open call's report, then take it.
- * @returns the report, or undefined when none arrived in time.
- */
-export async function takeUsage(
-  ledger: UsageLedger,
-  waitMs: number,
-  wait: (ms: number) => Promise<void>,
-): Promise<CursorUsage | undefined> {
-  const deadline = Date.now() + Math.max(0, waitMs);
-  while (!ledger.ready) {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) return undefined;
-    await wait(remaining);
-  }
-  return ledger.take();
 }

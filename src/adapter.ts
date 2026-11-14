@@ -18,9 +18,11 @@ import { isEnabled } from "./policy/model-config.ts";
 import type { ModelPolicy } from "./policy/types.ts";
 import type { Image } from "./prompt/content.ts";
 import { ChunkQueue, Reply } from "./reply.ts";
+import type { HandoffWindow } from "./session/handoff-window.ts";
 import { sessionKeyFor, type SessionRegistry } from "./session/registry.ts";
 import { runTurn } from "./session/turn.ts";
 import type { CursorSession } from "./session/session.ts";
+import type { TimingDeps } from "./session/timing.ts";
 import type { StallInfo } from "./session/watchdog.ts";
 import { imageRefs, readRequest } from "./transcript.ts";
 
@@ -36,6 +38,10 @@ export interface AdapterDeps {
   catalog: ModelCatalog;
   tiers: ContextTierStore;
   registry: SessionRegistry;
+  /** How long a tool-call delivery may hold, per model. */
+  handoff: HandoffWindow;
+  /** Per-step timing; disabled unless the operator enabled it. */
+  timing: TimingDeps;
   /** Reads the model policy from the configuration as it currently stands. */
   readPolicy: () => ModelPolicy;
   /** Capacity published upstream for one model, when the fallback snapshot describes it. */
@@ -114,6 +120,8 @@ export class CursorAdapter extends LlmAdapter {
         createAgent: this.deps.createAgent,
         registry: this.deps.registry,
         tiers: this.deps.tiers,
+        handoff: this.deps.handoff,
+        timing: this.deps.timing,
         readPolicy: this.deps.readPolicy,
         stallTimeoutMs: this.deps.stallTimeoutMs,
         onStall: this.deps.onStall,

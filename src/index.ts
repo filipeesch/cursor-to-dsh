@@ -31,8 +31,11 @@ import { debug } from "./debug.ts";
 import { createStallDiagnostics } from "./diagnostics.ts";
 import { resolveModelId } from "./model-catalog.ts";
 import { registerCatalogRoute } from "./route.ts";
+import { HandoffWindow } from "./session/handoff-window.ts";
 import { SessionRegistry } from "./session/registry.ts";
+import { createTimingSink } from "./session/timing.ts";
 import { createCursorAgent, listCursorModels, prewarmCursor } from "./sdk.ts";
+import { warmUpAtStart } from "./warmup.ts";
 
 export const name = "cursor-to-dsh";
 export const inject = ["llm"];
@@ -90,8 +93,9 @@ export function apply(ctx: Context, config: Config): void {
     resolveApiKey,
     persist: (snapshot: CatalogSnapshot) => writeJsonFile(catalogFile, { version: 1, ...snapshot }),
     onLive: (opts) => {
-      // Pay the SDK's one-time per-process setup in the background, once a live catalog proves the key works.
-      if (prewarmEnabled) void prewarmCursor(opts);
+      // Pay the SDK's one-time per-process setup in the background, once a live catalog proves the
+      // key works. This trigger is a retry when the apply-time attempt failed, so it swallows its own.
+      if (prewarmEnabled) void prewarmCursor(opts).catch(() => {});
       // The published capacities are projected onto the ids the catalog currently lists.
       known.note();
     },
@@ -110,6 +114,8 @@ export function apply(ctx: Context, config: Config): void {
   );
 
   const registry = new SessionRegistry();
+  const handoff = new HandoffWindow();
+  const timing = { enabled: settings.timing, write: createTimingSink(stateDir) };
   const recordStall = createStallDiagnostics(stateDir);
 
   const adapter = new CursorAdapter({
@@ -120,6 +126,8 @@ export function apply(ctx: Context, config: Config): void {
     catalog,
     tiers,
     registry,
+    handoff,
+    timing,
     readPolicy: settings.readPolicy,
     publishedWindow: (modelId: string) => known.windowFor(modelId),
     stallTimeoutMs: settings.stallTimeoutMs,
@@ -145,6 +153,14 @@ export function apply(ctx: Context, config: Config): void {
     );
   });
   ctx.effect(() => () => registry.closeAll(), "cursor sessions");
+  // Warm the provider SDK before the first user step: a credential and the persisted snapshot
+  // are enough, so a slow or failed catalog fetch cannot put the setup on a call.
+  void warmUpAtStart({
+    enabled: prewarmEnabled,
+    resolveApiKey,
+    models: () => catalog.current(),
+    prewarm: prewarmCursor,
+  });
   // Warm the catalog off the request path; a call never waits for it.
   void catalog.refresh().then(() => known.note()).catch(() => {});
 }

@@ -30,6 +30,8 @@ export interface SessionOptions {
   /** Window for the inactivity watchdog; 0 disables it. */
   stallTimeoutMs: number;
   onStall?: (session: CursorSession, info: StallInfo) => void;
+  /** A tool call arrived after this run's delivery; the gap is how late it was. */
+  onLateSibling?: (session: CursorSession, gapMs: number) => void;
 }
 
 export class CursorSession {
@@ -54,6 +56,15 @@ export class CursorSession {
   seen: string[] = [];
   busy = false;
   closed = false;
+  /** When the current turn's calls were delivered; 0 while no delivery is open. */
+  deliveredAt = 0;
+  /**
+   * Where the SDK's per-update callback for the open call goes, or undefined when telemetry is
+   * off. The turn points it at that call's recorder; the session holds no counters of its own.
+   */
+  deltaSink: ((update: any) => void) | undefined;
+  /** Gap of the last sibling call that arrived after a delivery, for diagnostics. */
+  lateSiblingGapMs = 0;
   /** Set once the watchdog gives up on the current run. */
   stall: StallInfo | undefined;
 
@@ -100,9 +111,26 @@ export class CursorSession {
     });
   }
 
+  /** This turn's calls were delivered to the host; a sibling arriving now missed that delivery. */
+  noteDelivery(): void {
+    this.deliveredAt = Date.now();
+  }
+
+  /** The gap of the last sibling that missed its delivery, cleared as it is reported. */
+  takeLateSibling(): number {
+    const gap = this.lateSiblingGapMs;
+    this.lateSiblingGapMs = 0;
+    return gap;
+  }
+
   registerCall(name: string, args: unknown, toolCallId: string | undefined): Promise<any> {
     // A tool call is provider output for the open turn, even when the model sent no prose first.
     this.ledger.sawContent();
+    if (this.deliveredAt > 0 && !this.runDone && this.pending.some((call) => call.handed)) {
+      const gap = Date.now() - this.deliveredAt;
+      this.lateSiblingGapMs = gap;
+      this.options.onLateSibling?.(this, gap);
+    }
     return new Promise((resolve) => {
       this.pending.push({
         id: toolCallId || `call_${name}_${Date.now().toString(36)}_${this.pending.length}`,
@@ -117,7 +145,10 @@ export class CursorSession {
   }
 
   startRun(run: any): void {
-    Object.assign(this, { run, events: [], eventCursor: 0, modelCalls: 0, runDone: false, runResult: undefined, runError: undefined, stall: undefined });
+    Object.assign(this, {
+      run, events: [], eventCursor: 0, modelCalls: 0, runDone: false, runResult: undefined, runError: undefined, stall: undefined,
+      deliveredAt: 0,
+    });
     this.watchdog.resume();
     void (async () => {
       try {
@@ -129,7 +160,7 @@ export class CursorSession {
             debug(`first ${msg?.type} key=${this.key.slice(0, 12)} after ${Date.now() - sent}ms`);
           }
           if (msg?.type === "usage") {
-            // The arrival time relative to the tool handoff decides whether this report is usable.
+            // The open call's own content decides whether this report is usable, not when it lands.
             debug(`usage key=${this.key.slice(0, 12)} after=${Date.now() - sent}ms handed=${this.pending.filter((p) => p.handed).length} content=${this.ledger.hasContent}`);
             this.ledger.report(msg.usage);
           } else {
@@ -165,6 +196,8 @@ export class CursorSession {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.deliveredAt = 0;
+    this.deltaSink = undefined;
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.watchdog.stop();
     this.ledger.end();

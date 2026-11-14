@@ -46,7 +46,7 @@
     "build": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node scripts/build-client.mjs",
     "prepare": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node scripts/build-client.mjs",
     "test": "node --experimental-strip-types --test test/*.test.ts",
-    "check": "tsc -p tsconfig.json && tsc -p tsconfig.client.json",
+    "check": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && tsc -p tsconfig.scripts.json",
     "smoke:client": "node scripts/smoke-client.mjs",
     "check:public": "node scripts/check-public.mjs"
   },
