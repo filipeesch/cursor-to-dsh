@@ -25,7 +25,10 @@ export interface PageHandlers {
   onNewModels: (value: string) => void;
   onKeyValue: (value: string) => void;
   onSaveKey: () => void;
-  onToggleReveal: () => void;
+  /** Ask to replace a stored key. */
+  onChangeKey: () => void;
+  /** Discard a replacement without storing it. */
+  onCancelKey: () => void;
 }
 
 /** Everything the page shows. */
@@ -41,7 +44,8 @@ export interface PageState {
     value: string;
     configured: boolean | undefined;
     busy: boolean;
-    revealed: boolean;
+    /** Whether the field is open to replace a stored key. */
+    editing: boolean;
   };
   saving: boolean;
   dirty: boolean;
@@ -64,25 +68,38 @@ function keyStatusText(configured: boolean | undefined, reference: string): stri
   return "Credential state for " + reference + " is unavailable.";
 }
 
-/** The API key section: one masked field, a reveal control and a save that stores a credential. */
+/**
+ * The API key section.
+ *
+ * A stored key is never rendered: once the credential is configured the section shows only its
+ * state and a control to replace it, and the replacement field stays closed until asked for.
+ */
 export function KeySection(props: { state: PageState; handlers: PageHandlers }): any {
   const { key, writable } = props.state;
   const { handlers } = props;
-  return section("API key", "Stored as a credential, never read back by the page.", h("div", { className: "ctd-key" },
-    h("div", { className: "ctd-key-row" },
+  const replaceable = key.configured === true;
+  const open = !replaceable || key.editing;
+  const controls = open
+    ? h("div", { className: "ctd-key-row" },
       h("input", {
-        type: key.revealed ? "text" : "password",
+        type: "password",
         className: "ctd-input ctd-key-input",
         value: key.value,
-        placeholder: key.configured === true ? "Stored key - type to replace" : "Paste the Cursor API key",
+        placeholder: replaceable ? "New key" : "Paste the Cursor API key",
         autoComplete: "new-password",
         spellCheck: false,
         disabled: !writable || key.busy,
+        autoFocus: replaceable,
         "aria-label": "Cursor API key",
         onChange: (event: any) => handlers.onKeyValue(event.target.value),
       }),
-      h("button", { type: "button", className: "ctd-button", onClick: handlers.onToggleReveal, disabled: key.value.length === 0 }, key.revealed ? "Hide" : "Show"),
-      h("button", { type: "button", className: "ctd-button ctd-button-primary", onClick: handlers.onSaveKey, disabled: !writable || key.busy || key.value.trim().length === 0 }, key.busy ? "Saving..." : "Save key")),
+      h("button", { type: "button", className: "ctd-button ctd-button-primary", onClick: handlers.onSaveKey, disabled: !writable || key.busy || key.value.trim().length === 0 }, key.busy ? "Saving..." : "Save key"),
+      replaceable
+        ? h("button", { type: "button", className: "ctd-button", onClick: handlers.onCancelKey, disabled: key.busy }, "Cancel")
+        : null)
+    : h("div", { className: "ctd-key-row" },
+      h("button", { type: "button", className: "ctd-button", onClick: handlers.onChangeKey, disabled: !writable || key.busy }, "Change key"));
+  return section("API key", "Stored as a credential, never read back by the page.", h("div", { className: "ctd-key" }, controls,
     h("p", { className: "ctd-status " + (key.configured === true ? "ctd-status-ok" : key.configured === false ? "ctd-status-warn" : "ctd-status-dim") }, keyStatusText(key.configured, key.reference))));
 }
 

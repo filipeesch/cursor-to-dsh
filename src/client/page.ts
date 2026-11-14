@@ -56,7 +56,8 @@ export function CursorRowConfig(props: RowConfigProps): any {
   const [message, setMessage] = useState<{ kind: "saved" | "error"; text: string } | undefined>(undefined);
   const [keyValue, setKeyValue] = useState("");
   const [keyBusy, setKeyBusy] = useState(false);
-  const [revealed, setRevealed] = useState(false);
+  // A stored key keeps the field closed until the user asks to change it.
+  const [editingKey, setEditingKey] = useState(false);
 
   const reference = keyRefOf(accepted);
   const writable = form?.state?.writable !== false;
@@ -101,7 +102,11 @@ export function CursorRowConfig(props: RowConfigProps): any {
     onSaveKey: () => {
       void saveKey();
     },
-    onToggleReveal: () => setRevealed((current) => !current),
+    onChangeKey: () => setEditingKey(true),
+    onCancelKey: () => {
+      setEditingKey(false);
+      setKeyValue("");
+    },
   };
 
   async function save(): Promise<void> {
@@ -141,7 +146,7 @@ export function CursorRowConfig(props: RowConfigProps): any {
         return;
       }
       setKeyValue("");
-      setRevealed(false);
+      setEditingKey(false);
       setMessage({ kind: "saved", text: "API key stored." });
     } catch (error: unknown) {
       setMessage({ kind: "error", text: "The API key was not stored: " + messageOf(error) });
@@ -159,7 +164,7 @@ export function CursorRowConfig(props: RowConfigProps): any {
     ...(external.catalogError === undefined ? {} : { catalogError: external.catalogError }),
     ...(external.catalog?.knownContext.fetchedAt === undefined ? {} : { catalogAge: external.catalog.knownContext.fetchedAt }),
     knownContextEnabled: external.catalog?.knownContext.enabled ?? true,
-    key: { reference, value: keyValue, configured: external.key.configured, busy: keyBusy, revealed },
+    key: { reference, value: keyValue, configured: external.key.configured, busy: keyBusy, editing: editingKey },
     saving,
     dirty,
     writable,

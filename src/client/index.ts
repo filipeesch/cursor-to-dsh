@@ -78,7 +78,7 @@ function installStyles(): () => void {
   };
 }
 
-export const inject = ["slots", "remote"];
+export const inject = ["slots", "remote", "remote.credentials"];
 
 export function apply(ctx: ClientContext): void {
   const slots = (ctx as unknown as { slots: SlotsLike }).slots;

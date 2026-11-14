@@ -49,8 +49,16 @@ const handlers: PageHandlers = {
   onNewModels: () => {},
   onKeyValue: () => {},
   onSaveKey: () => {},
-  onToggleReveal: () => {},
+  onChangeKey: () => {},
+  onCancelKey: () => {},
 };
+
+function hasTag(node: any, tag: string): boolean {
+  if (node === null || node === undefined || typeof node !== "object") return false;
+  if (Array.isArray(node)) return node.some((child) => hasTag(child, tag));
+  if (node.type === tag) return true;
+  return hasTag(node.props?.children, tag);
+}
 
 function collected(node: any): string {
   if (node === null || node === undefined || node === false || node === true) return "";
@@ -72,7 +80,7 @@ function pageState(overrides: Partial<PageState> = {}): PageState {
     expanded: undefined,
     catalogLoading: false,
     knownContextEnabled: true,
-    key: { reference: "CURSOR_API_KEY", value: "", configured: false, busy: false, revealed: false },
+    key: { reference: "CURSOR_API_KEY", value: "", configured: false, busy: false, editing: false },
     saving: false,
     dirty: false,
     writable: true,
@@ -162,13 +170,29 @@ test("the credential reference and the window field parse from what the page sho
   assert.equal(windowSourceLabel("default"), "documented default");
 });
 
-test("the API key section says whether a key is stored without ever showing one", () => {
-  const stored = collected(KeySection({ state: pageState({ key: { ...pageState().key, configured: true } }), handlers }));
-  assert.match(stored, /A key is stored under CURSOR_API_KEY/);
-  const missing = collected(KeySection({ state: pageState(), handlers }));
-  assert.match(missing, /No key is stored under CURSOR_API_KEY/);
-  const unknown = collected(KeySection({ state: pageState({ key: { ...pageState().key, configured: undefined } }), handlers }));
-  assert.match(unknown, /Credential state for CURSOR_API_KEY is unavailable/);
+test("a stored key is never shown: the section offers to replace it instead", () => {
+  const stored = pageState({ key: { ...pageState().key, configured: true } });
+  const collapsed = KeySection({ state: stored, handlers });
+  assert.match(collected(collapsed), /A key is stored under CURSOR_API_KEY/);
+  assert.match(collected(collapsed), /Change key/);
+  assert.equal(hasTag(collapsed, "input"), false, "the field stays closed while a key is stored");
+  assert.doesNotMatch(collected(collapsed), /Show|Hide|Save key/);
+
+  const replacing = KeySection({ state: { ...stored, key: { ...stored.key, editing: true } }, handlers });
+  assert.equal(hasTag(replacing, "input"), true, "asking to change the key opens a field");
+  assert.match(collected(replacing), /Save key/);
+  assert.match(collected(replacing), /Cancel/);
+});
+
+test("without a stored key the field is open, and the states are stated", () => {
+  const missing = KeySection({ state: pageState(), handlers });
+  assert.equal(hasTag(missing, "input"), true);
+  assert.match(collected(missing), /No key is stored under CURSOR_API_KEY/);
+  assert.match(collected(missing), /Save key/);
+  assert.doesNotMatch(collected(missing), /Change key/);
+
+  const unknown = KeySection({ state: pageState({ key: { ...pageState().key, configured: undefined } }), handlers });
+  assert.match(collected(unknown), /Credential state for CURSOR_API_KEY is unavailable/);
 });
 
 test("the undescribed-model state is stated instead of offering controls the catalog cannot back", () => {
