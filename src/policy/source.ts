@@ -5,12 +5,11 @@
  * references and notifies the plugin, so a save applies without a remount and without touching a
  * live provider run.
  */
-import { MODE_VALUES, NEW_MODEL_VALUES, type FastMode, type MaxMode, type ModelPolicy, type ModelSettings, type NewModelDefault } from "./types.ts";
+import { MODE_VALUES, NEW_MODEL_VALUES, type FastMode, type ModelPolicy, type ModelSettings, type NewModelDefault } from "./types.ts";
 
 /** Values as configuration carries them, before validation. */
 export interface PolicyValues {
   context?: unknown;
-  maxMode?: unknown;
   fast?: unknown;
   newModels?: unknown;
   models?: unknown;
@@ -20,9 +19,9 @@ function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function mode(value: unknown, fallback: FastMode | MaxMode): FastMode | MaxMode {
+function mode(value: unknown, fallback: FastMode): FastMode {
   const normalized = text(value).toLowerCase();
-  return (MODE_VALUES as readonly string[]).includes(normalized) ? (normalized as FastMode | MaxMode) : fallback;
+  return (MODE_VALUES as readonly string[]).includes(normalized) ? (normalized as FastMode) : fallback;
 }
 
 function newModelDefault(value: unknown): NewModelDefault {
@@ -39,8 +38,6 @@ function modelSettings(value: unknown): ModelSettings {
   if (context) entry.context = context;
   const window = typeof raw.contextWindow === "number" ? raw.contextWindow : Number(text(raw.contextWindow));
   if (Number.isFinite(window) && window > 0) entry.contextWindow = Math.round(window);
-  const maxMode = text(raw.maxMode).toLowerCase();
-  if ((MODE_VALUES as readonly string[]).includes(maxMode)) entry.maxMode = maxMode as MaxMode;
   const fast = text(raw.fast).toLowerCase();
   if ((MODE_VALUES as readonly string[]).includes(fast)) entry.fast = fast as FastMode;
   return entry;
@@ -68,7 +65,6 @@ export function buildPolicy(values: PolicyValues): ModelPolicy {
   const preference = text(values.context).toLowerCase();
   return {
     context: preference === "min" ? "min" : "max",
-    maxMode: mode(values.maxMode, "off") as MaxMode,
     fast: mode(values.fast, "off") as FastMode,
     newModels: newModelDefault(values.newModels),
     models: models(values.models),

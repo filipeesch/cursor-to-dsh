@@ -1,10 +1,11 @@
 /**
- * Context tiers and Max Mode, read from the catalog's own parameter definitions and variants.
+ * Context tiers, read from the catalog's own parameter definitions.
  *
- * Cursor lists the context sizes a model offers as parameter values (200k, 1m) and marks the
- * variants only available in Max Mode, so a new tier needs no code change.
+ * Cursor lists the context sizes a model offers as parameter values (200k, 1m), so a new tier needs
+ * no code change. Max Mode is legacy (Cursor removed it for usage-based pricing) and the tier is
+ * chosen directly, so the catalog's variant markings no longer filter anything.
  */
-import { parameterValues, parametersOf, type CatalogParamDef, type CatalogVariant, type Param } from "./model-catalog.ts";
+import { parameterValues, parametersOf, type CatalogParamDef, type Param } from "./model-catalog.ts";
 
 /** Parsed tier: the value Cursor accepts and its size in tokens. */
 export interface Tier {
@@ -46,50 +47,22 @@ export function preferredContext(model: unknown, preference: string): Tier | und
   return all.find((tier) => tier.value.toLowerCase() === wanted) ?? all[0];
 }
 
-/** Variants the catalog publishes for this model. */
-export function variantsOf(model: unknown): CatalogVariant[] {
-  const variants = (model as { variants?: unknown } | undefined)?.variants;
-  return Array.isArray(variants) ? (variants as CatalogVariant[]) : [];
-}
-
 /**
- * Whether the only catalog variants that carry this tier require Max Mode. A tier the catalog does
- * not describe, or a catalog that carries no marking, is not treated as requiring it.
+ * The tier to request: the one the provider already accepted for this model, else the preference.
+ * An accepted value the catalog no longer offers is ignored. Cursor removed Max Mode for
+ * usage-based pricing, so the tier is chosen directly and no tier is filtered out.
  */
-export function requiresMaxMode(model: unknown, contextValue: string): boolean {
-  const matching = variantsOf(model).filter((variant) =>
-    (variant.params ?? []).some((param) => param?.id?.trim() === "context" && String(param?.value ?? "").trim().toLowerCase() === contextValue.toLowerCase()),
-  );
-  return matching.length > 0 && matching.every((variant) => variant.isMaxMode === true);
-}
-
-/** Whether any published variant of this model runs only in Max Mode. */
-export function hasMaxModeVariants(model: unknown): boolean {
-  return variantsOf(model).some((variant) => variant.isMaxMode === true);
-}
-
-/**
- * The tier to request: the one the provider already accepted for this model when the Max Mode
- * policy still allows it, else the preference over the tiers the policy allows. An accepted value
- * the catalog no longer offers is ignored.
- */
-export function contextTierValue(
-  model: unknown,
-  accepted: string | undefined,
-  preference: string,
-  maxMode: string,
-): string | undefined {
-  const allowed = (value: string) => maxMode !== "off" || !requiresMaxMode(model, value);
+export function contextTierValue(model: unknown, accepted: string | undefined, preference: string): string | undefined {
+  const offered = offeredTiers(model);
   if (accepted) {
-    const match = offeredTiers(model).find((tier) => tier.value.toLowerCase() === accepted.toLowerCase());
-    if (match && allowed(match.value)) return match.value;
+    const match = offered.find((tier) => tier.value.toLowerCase() === accepted.toLowerCase());
+    if (match) return match.value;
   }
-  const usable = offeredTiers(model).filter((tier) => allowed(tier.value));
-  if (!usable.length) return undefined;
+  if (!offered.length) return undefined;
   const wanted = preference.trim().toLowerCase();
-  if (wanted === "max") return usable[usable.length - 1].value;
-  if (wanted === "min") return usable[0].value;
-  return (usable.find((tier) => tier.value.toLowerCase() === wanted) ?? usable[0]).value;
+  if (wanted === "max") return offered[offered.length - 1].value;
+  if (wanted === "min") return offered[0].value;
+  return (offered.find((tier) => tier.value.toLowerCase() === wanted) ?? offered[0]).value;
 }
 
 /**

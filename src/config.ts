@@ -19,8 +19,6 @@ export interface Config {
   apiKeyEnv: Volatile<string> | string;
   /** Global context tier preference: max or min. */
   context: Volatile<string>;
-  /** Periodic Cursor Max Mode policy: off, on, or auto. */
-  maxMode: Volatile<string>;
   /** Cursor Fast (priority) mode: off, on, or auto. */
   fast: Volatile<string>;
   /** Per-model settings, keyed by model id; "*" covers models without their own entry. */
@@ -39,14 +37,12 @@ const modelEntry = Schema.object({
   enabled: Schema.boolean().description("Whether this model is offered for selection."),
   context: Schema.string().description("Context tier requested for this model: max, min, or one offered value such as 300k."),
   contextWindow: Schema.number().description("Manual advertised window in tokens, used only when neither the provider tier nor the published capacity describes the model."),
-  maxMode: Schema.string().description("Max Mode policy for this model: off, on, or auto."),
   fast: Schema.string().description("Fast mode policy for this model: off, on, or auto."),
 });
 
 export const Config: Schema<Config> = Schema.object({
   apiKeyEnv: Schema.string().role("credential-ref").default(DEFAULT_KEY_REF).description("Credential / environment variable that holds the Cursor API key.").volatile(),
-  context: Schema.string().default(DEFAULT_POLICY.context).description("Global context tier preference: max (largest the Max Mode policy allows) or min.").volatile(),
-  maxMode: Schema.string().default(DEFAULT_POLICY.maxMode).description("Cursor Max Mode (extended context, billed differently): off, on, or auto.").volatile(),
+  context: Schema.string().default(DEFAULT_POLICY.context).description("Global context tier preference: max (largest offered) or min.").volatile(),
   fast: Schema.string().default(DEFAULT_POLICY.fast).description("Cursor Fast (priority) mode: off, on, or auto.").volatile(),
   models: Schema.dict(modelEntry).default({}).description('Per-model settings keyed by model id; "*" covers models without their own entry.').volatile(),
   newModels: Schema.string().default(DEFAULT_POLICY.newModels).description("Whether a model with no entry of its own is enabled: enabled or disabled.").volatile(),
@@ -92,7 +88,6 @@ function numberFrom(value: unknown, fallback: number): number {
 export function resolveSettings(config: Config | undefined, env: NodeJS.ProcessEnv = process.env): Settings {
   const policyValues = (): PolicyValues => ({
     context: env.DSH_CURSOR_CONTEXT?.trim() || unwrap(config?.context),
-    maxMode: unwrap(config?.maxMode),
     fast: unwrap(config?.fast),
     newModels: unwrap(config?.newModels),
     models: unwrap(config?.models),

@@ -30,6 +30,7 @@ const context = {
 };
 const exports = entry.factory((specifier) => {
   if (specifier === 'react') return react;
+  if (specifier === '@deepseek-ai/dsh-client-ui-primitives') return { SegmentedControl: () => null };
   throw new Error('unexpected require: ' + specifier);
 });
 if (typeof exports.apply !== 'function' || !Array.isArray(exports.inject)) throw new Error('the bundle exports no plugin');

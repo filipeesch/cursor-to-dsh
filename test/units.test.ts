@@ -241,7 +241,7 @@ test("settings resolve into readers over the live configuration", () => {
   const base = resolveSettings(undefined, {});
   assert.equal(base.stallTimeoutMs, 120_000);
   assert.equal(base.knownContext(), true);
-  assert.deepEqual(base.readPolicy(), { context: "max", maxMode: "off", fast: "off", newModels: "enabled", models: {} });
+  assert.deepEqual(base.readPolicy(), { context: "max", fast: "off", newModels: "enabled", models: {} });
 
   const off = resolveSettings({ knownContext: "off", stallTimeoutMs: 5_000 } as any, {});
   assert.equal(off.knownContext(), false);

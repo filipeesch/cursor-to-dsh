@@ -16,7 +16,6 @@ import type { ContextTierStore } from "../cursor/context-tier.ts";
 import { isRejectedParams, smallerContext } from "../model-tiers.ts";
 import { modelParams } from "../model-params.ts";
 import { resolveModelId, type Param } from "../model-catalog.ts";
-import { maxModeFor } from "../policy/model-config.ts";
 import type { ModelPolicy } from "../policy/types.ts";
 import { currentTurnImages, imagesOf, textOf } from "../prompt/content.ts";
 import { fingerprint, hash } from "../prompt/fingerprint.ts";
@@ -87,7 +86,6 @@ async function openSession(
   key: string,
   modelId: string,
   params: Param[] | undefined,
-  maxMode: boolean,
   t: Transcript,
   apiKey: string,
   cwd: string,
@@ -105,8 +103,6 @@ async function openSession(
     model: {
       id: modelId,
       ...(params?.length ? { params } : {}),
-      // Only an explicit policy turns on the provider's extended-context mode.
-      ...(maxMode ? { maxMode: true } : {}),
     },
     apiKey,
     // Always "mcp": host tools are MCP custom tools, and tools can be added later.
@@ -200,7 +196,7 @@ export async function runTurn(options: TurnOptions, services: TurnServices): Pro
   try {
     if (!s || plan.kind === "fresh") {
       const started = Date.now();
-      s = await openSession(sessionKey, modelId, params, maxModeFor(policy, modelId) === "on", t, apiKey, cwd, services);
+      s = await openSession(sessionKey, modelId, params, t, apiKey, cwd, services);
       const created = Date.now();
       s.busy = true;
       await sendFirst(s);
@@ -219,7 +215,7 @@ export async function runTurn(options: TurnOptions, services: TurnServices): Pro
         s.systemPrompt = t.systemPrompt;
       } else {
         registry.drop(s);
-        s = await openSession(sessionKey, modelId, params, maxModeFor(policy, modelId) === "on", t, apiKey, cwd, services);
+        s = await openSession(sessionKey, modelId, params, t, apiKey, cwd, services);
         s.busy = true;
         await sendFirst(s);
         freshRun = true;
@@ -312,7 +308,7 @@ export async function runTurn(options: TurnOptions, services: TurnServices): Pro
         const next = lower.find((p) => p.id === "context");
         if (next) tiers.set(modelId, next.value);
         registry.drop(s);
-        s = await openSession(sessionKey, modelId, lower, maxModeFor(policy, modelId) === "on", t, apiKey, cwd, services);
+        s = await openSession(sessionKey, modelId, lower, t, apiKey, cwd, services);
         s.busy = true;
         await sendFirst(s);
         s.seen = t.messages.map(fingerprint);

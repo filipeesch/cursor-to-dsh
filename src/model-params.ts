@@ -7,7 +7,7 @@
  */
 import { parameterValues, parametersOf, type CatalogParamDef, type Param } from "./model-catalog.ts";
 import { contextTierValue } from "./model-tiers.ts";
-import { contextPreferenceFor, fastFor, maxModeFor } from "./policy/model-config.ts";
+import { acceptedTierFor, contextPreferenceFor, fastFor } from "./policy/model-config.ts";
 import { DEFAULT_POLICY, type ModelPolicy } from "./policy/types.ts";
 
 const LEVEL_RANK: Record<string, number> = {
@@ -81,7 +81,7 @@ export function modelParams(
     if (wanted && parameterValues(fast).includes(wanted)) params.push({ id: fast.id, value: wanted });
   }
 
-  const context = contextTierValue(model, accepted, contextPreferenceFor(policy, modelId), maxModeFor(policy, modelId));
+  const context = contextTierValue(model, acceptedTierFor(policy, modelId, accepted), contextPreferenceFor(policy, modelId));
   if (context) params.push({ id: "context", value: context });
 
   return params.length ? params : undefined;
