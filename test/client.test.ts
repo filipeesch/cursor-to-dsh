@@ -15,7 +15,7 @@ import {
   type ModelRow,
 } from "../src/client/derive.ts";
 import type { PageHandlers, PageState } from "../src/client/views.ts";
-import { KeySection, ModelsSection, ModelOptions, PageView, SummaryView } from "../src/client/views.ts";
+import { KeySection, ModelsSection, ModelOptions, NewModelsSection, PageView, SummaryView } from "../src/client/views.ts";
 
 const payload: CatalogPayload = {
   version: 1,
@@ -82,6 +82,7 @@ function pageState(overrides: Partial<PageState> = {}): PageState {
     knownContextEnabled: true,
     key: { reference: "CURSOR_API_KEY", value: "", configured: false, busy: false, editing: false },
     saving: false,
+    savingNewModels: false,
     dirty: false,
     writable: true,
     ...overrides,
@@ -211,6 +212,22 @@ test("the page renders the catalog-unavailable state and the save control", () =
   const footer = dirty.props.children.at(-1);
   assert.equal(footer.props.children.at(-1).props.disabled, false, "a dirty page offers Save");
   assert.match(collected(footer), /Save/);
+});
+
+test("the new-model default is a checkbox that writes on change", () => {
+  const section = NewModelsSection({ state: pageState(), handlers });
+  assert.equal(hasTag(section, "select"), false, "no select for a two-state choice");
+  assert.equal(hasTag(section, "input"), true);
+  assert.match(collected(section), /Models Cursor adds appear enabled/);
+  const checkedOf = (node: any): boolean => {
+    if (node === null || node === undefined || typeof node !== "object") return false;
+    if (Array.isArray(node)) return node.some(checkedOf);
+    if (node.props?.type === "checkbox") return node.props.checked === true;
+    return checkedOf(node.props?.children);
+  };
+  assert.equal(checkedOf(section), true, "enabled is the default state");
+  const disabledState = pageState({ derived: derivePage({ newModels: "disabled" }, payload) });
+  assert.equal(checkedOf(NewModelsSection({ state: disabledState, handlers })), false);
 });
 
 test("the row summary names how many models are configured", () => {

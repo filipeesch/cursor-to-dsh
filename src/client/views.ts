@@ -22,7 +22,8 @@ export interface PageHandlers {
   onFast: (id: string, value: string | undefined) => void;
   onMaxMode: (id: string, value: string | undefined) => void;
   onContext: (value: string) => void;
-  onNewModels: (value: string) => void;
+  /** Write the new-model default immediately; this control has no draft. */
+  onNewModels: (enabled: boolean) => void;
   onKeyValue: (value: string) => void;
   onSaveKey: () => void;
   /** Ask to replace a stored key. */
@@ -48,6 +49,8 @@ export interface PageState {
     editing: boolean;
   };
   saving: boolean;
+  /** Whether the new-model toggle has an immediate write in flight. */
+  savingNewModels: boolean;
   dirty: boolean;
   writable: boolean;
   message?: { kind: "saved" | "error"; text: string };
@@ -240,18 +243,18 @@ export function ModelsSection(props: { state: PageState; handlers: PageHandlers 
   }, catalogLoading ? "Loading..." : "Reload catalog"));
 }
 
-/** Whether a model with no entry of its own appears. */
+/** Whether a model with no entry of its own appears; the toggle writes on change. */
 export function NewModelsSection(props: { state: PageState; handlers: PageHandlers }): any {
-  const { derived, writable } = props.state;
-  return section("New models", "Applies to models the catalog lists without an entry of their own.", h("label", { className: "ctd-field" },
-    h("span", { className: "ctd-field-label" }, "Models added by Cursor"),
-    h("select", {
-      className: "ctd-input ctd-select",
-      value: derived.newModels,
-      disabled: !writable,
-      "aria-label": "New model default",
-      onChange: (event: any) => props.handlers.onNewModels(event.target.value),
-    }, option("enabled", "Appear enabled"), option("disabled", "Appear disabled"))));
+  const { derived, writable, savingNewModels } = props.state;
+  return section("New models", "Applies to models the catalog lists without an entry of their own, and saves as soon as it is toggled.", h("label", { className: "ctd-check" },
+    h("input", {
+      type: "checkbox",
+      checked: derived.newModels === "enabled",
+      disabled: !writable || savingNewModels,
+      "aria-label": "New models appear enabled",
+      onChange: (event: any) => props.handlers.onNewModels(event.target.checked),
+    }),
+    h("span", { className: "ctd-check-label" }, "Models Cursor adds appear enabled")));
 }
 
 /** The page itself, plus its messages and save control. */
