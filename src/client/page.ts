@@ -58,6 +58,7 @@ export function CursorRowConfig(props: RowConfigProps): any {
   const [keyBusy, setKeyBusy] = useState(false);
   // A stored key keeps the field closed until the user asks to change it.
   const [editingKey, setEditingKey] = useState(false);
+  const [newModelsBusy, setNewModelsBusy] = useState(false);
 
   const reference = keyRefOf(accepted);
   const writable = form?.state?.writable !== false;
@@ -97,7 +98,9 @@ export function CursorRowConfig(props: RowConfigProps): any {
     onFast: (id, value) => edit(withModelPatch(draft, id, { fast: value as ModelSettings["fast"] })),
     onMaxMode: (id, value) => edit(withModelPatch(draft, id, { maxMode: value as ModelSettings["maxMode"] })),
     onContext: (value) => edit(withGlobals(draft, { context: value })),
-    onNewModels: (value) => edit(withGlobals(draft, { newModels: value })),
+    onNewModels: (enabled) => {
+      void saveNewModels(enabled);
+    },
     onKeyValue: setKeyValue,
     onSaveKey: () => {
       void saveKey();
@@ -134,6 +137,27 @@ export function CursorRowConfig(props: RowConfigProps): any {
     }
   }
 
+  /** The new-model default has no draft: toggling it writes straight through. */
+  async function saveNewModels(enabled: boolean): Promise<void> {
+    if (!form) return;
+    const value = enabled ? "enabled" : "disabled";
+    setNewModelsBusy(true);
+    setMessage(undefined);
+    try {
+      const acceptedWrite = await form.mutate([{ op: "set", path: ["newModels"], value }], form.state.revision);
+      if (acceptedWrite === false) {
+        setMessage({ kind: "error", text: "The host refused the change; nothing was saved." });
+        return;
+      }
+      setDraft((current) => withGlobals(current, { newModels: value }));
+      setMessage({ kind: "saved", text: "Saved." });
+    } catch (error: unknown) {
+      setMessage({ kind: "error", text: "The save failed: " + messageOf(error) });
+    } finally {
+      setNewModelsBusy(false);
+    }
+  }
+
   async function saveKey(): Promise<void> {
     const value = keyValue.trim();
     if (!value) return;
@@ -166,6 +190,7 @@ export function CursorRowConfig(props: RowConfigProps): any {
     knownContextEnabled: external.catalog?.knownContext.enabled ?? true,
     key: { reference, value: keyValue, configured: external.key.configured, busy: keyBusy, editing: editingKey },
     saving,
+    savingNewModels: newModelsBusy,
     dirty,
     writable,
     ...(message === undefined ? {} : { message }),

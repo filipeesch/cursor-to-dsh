@@ -52,34 +52,34 @@ interface ConnectionFence {
  * @param deps - what the route answers from.
  */
 export function registerCatalogRoute(ctx: any, deps: CatalogRouteDeps): void {
-  ctx.inject(["webServer"], (child: any) => {
-    child.effect(() => child.webServer.register({
-      kind: "exact",
-      path: CATALOG_PATH,
-      handler: (request: any, response: any) => {
-        const fence = Reflect.get(child, "connection") as ConnectionFence | undefined;
-        if (!fence) {
-          response.statusCode = 401;
-          response.end();
-          return;
-        }
-        const rejection = fence.requestRejection(request);
-        if (rejection !== undefined) {
-          response.statusCode = rejection;
-          response.end();
-          return;
-        }
-        if (request.method !== "GET" && request.method !== "HEAD") {
-          response.statusCode = 405;
-          response.setHeader("allow", "GET, HEAD");
-          response.end();
-          return;
-        }
-        response.statusCode = 200;
-        response.setHeader("content-type", "application/json; charset=utf-8");
-        response.setHeader("cache-control", "no-store");
-        response.end(request.method === "HEAD" ? undefined : JSON.stringify(payloadFor(deps)));
-      },
-    }), "cursor-to-dsh: GET " + CATALOG_PATH);
+  // The fence is a service like any other: reading it without injecting it throws inside the
+  // handler, and the web carrier answers a failed handler with 400. Both services are injected
+  // together, so a profile without either simply never serves the route.
+  ctx.inject(["connection"], (fenced: any) => {
+    ctx.inject(["webServer"], (web: any) => {
+      web.effect(() => web.webServer.register({
+        kind: "exact",
+        path: CATALOG_PATH,
+        handler: (request: any, response: any) => {
+          const fence = fenced.connection as ConnectionFence;
+          const rejection = fence.requestRejection(request);
+          if (rejection !== undefined) {
+            response.statusCode = rejection;
+            response.end();
+            return;
+          }
+          if (request.method !== "GET" && request.method !== "HEAD") {
+            response.statusCode = 405;
+            response.setHeader("allow", "GET, HEAD");
+            response.end();
+            return;
+          }
+          response.statusCode = 200;
+          response.setHeader("content-type", "application/json; charset=utf-8");
+          response.setHeader("cache-control", "no-store");
+          response.end(request.method === "HEAD" ? undefined : JSON.stringify(payloadFor(deps)));
+        },
+      }), "cursor-to-dsh: GET " + CATALOG_PATH);
+    });
   });
 }

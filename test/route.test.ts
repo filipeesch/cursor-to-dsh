@@ -77,17 +77,21 @@ function fakeContext(options: { fence?: (request: any) => 401 | 403 | undefined 
   const routes: any[] = [];
   const ctx: any = {
     inject: (dependencies: string[], callback: (child: any) => void) => {
-      if (!dependencies.includes("webServer")) return;
-      callback({
-        effect: (fn: () => any) => fn(),
-        webServer: {
+      const child: any = { effect: (fn: () => any) => fn() };
+      if (dependencies.includes("connection")) {
+        // A host without the connection service never reaches the nested registration.
+        if (options.fence === undefined) return;
+        child.connection = { requestRejection: options.fence };
+      }
+      if (dependencies.includes("webServer")) {
+        child.webServer = {
           register: (route: any) => {
             routes.push(route);
             return () => {};
           },
-        },
-        ...(options.fence === undefined ? {} : { connection: { requestRejection: options.fence } }),
-      });
+        };
+      }
+      callback(child);
     },
   };
   return { ctx, routes };
@@ -117,12 +121,10 @@ test("an unauthenticated request is refused before any catalog data", () => {
   assert.equal(response.body, undefined);
 });
 
-test("a host with no connection service refuses rather than serving", () => {
+test("a host with no connection service never registers the route", () => {
   const { ctx, routes } = fakeContext();
   registerCatalogRoute(ctx, deps);
-  const response = fakeResponse();
-  routes[0].handler({ method: "GET", headers: {} }, response);
-  assert.equal(response.statusCode, 401);
+  assert.deepEqual(routes, [], "without the fence service the route is absent rather than unauthenticated");
 });
 
 test("only GET and HEAD are answered", () => {

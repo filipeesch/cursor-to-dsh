@@ -20,6 +20,8 @@ export const STYLES = [
   ".ctd-key-input { flex: 1 1 320px; }",
   ".ctd-select { min-width: 240px; }",
   ".ctd-field { display: flex; flex-direction: column; gap: 6px; }",
+  ".ctd-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }",
+  ".ctd-check-label { font-size: 13px; line-height: 18px; }",
   ".ctd-field-label { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 16px; }",
   ".ctd-button { padding: 6px 12px; border-radius: 8px; border: 0.5px solid var(--dsw-alias-border-l2); background: transparent; color: var(--dsw-alias-label-primary); font: inherit; font-size: 12px; line-height: 18px; cursor: pointer; }",
   ".ctd-button:disabled { opacity: 0.45; cursor: default; }",
