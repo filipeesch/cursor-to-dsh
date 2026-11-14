@@ -85,6 +85,21 @@ test("the published capacity beats a manual value, and the default comes last", 
   assert.deepEqual(fallback, { tokens: DEFAULT_CONTEXT_WINDOW, source: "default" });
 });
 
+test("a model the provider documents fills the gap the catalog and the public catalog leave", () => {
+  const window = resolveContextWindow({ modelId: "composer-2.5", model: {}, policy: DEFAULT_POLICY });
+  assert.deepEqual(window, { tokens: 200_000, source: "documented" });
+  assert.deepEqual(resolveContextWindow({ modelId: "composer-2.5", model: {}, policy: DEFAULT_POLICY, publishedWindow: 1_048_576 }), {
+    tokens: 1_048_576,
+    source: "published",
+  }, "a published capacity still wins");
+  assert.equal(
+    resolveContextWindow({ modelId: "composer-2.5", model: {}, policy: { ...DEFAULT_POLICY, models: { "composer-2.5": { contextWindow: 500_000 } } } }).source,
+    "manual",
+    "a manual value overrides the documented capacity",
+  );
+  assert.equal(resolveContextWindow({ modelId: "composer-2", model: {}, policy: DEFAULT_POLICY }).source, "default");
+});
+
 test("a manual value never overrides a provider tier", () => {
   const window = resolveContextWindow({ modelId: "claude", model: tiered, policy: { ...DEFAULT_POLICY, models: { claude: { contextWindow: 400_000 } } } });
   assert.deepEqual(window, { tokens: 1_000_000, source: "tier", tier: "1m" });

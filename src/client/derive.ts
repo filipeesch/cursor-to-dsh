@@ -220,5 +220,6 @@ export function windowSourceLabel(source: ContextWindowResolution["source"], tie
   if (source === "tier") return "provider tier" + (tier === undefined ? "" : " " + tier);
   if (source === "published") return "published upstream";
   if (source === "manual") return "manual value";
+  if (source === "documented") return "documented by Cursor";
   return "documented default";
 }

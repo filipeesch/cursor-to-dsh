@@ -162,6 +162,8 @@ export function ModelRowView(props: { row: ModelRow; writable: boolean; handlers
             onChange: (next: string) => handlers.onFast(row.id, next === "" ? undefined : next),
           }))
         : null,
+      // The value lives in the field when it can be edited, and in a chip when it cannot; the source
+      // stays on the control's tooltip so the row does not carry a provenance label.
       row.manualWindow.editable
         ? h("label", { className: "ctd-control" },
           h("span", { className: "ctd-control-label" }, "Window"),
@@ -170,14 +172,12 @@ export function ModelRowView(props: { row: ModelRow; writable: boolean; handlers
             inputMode: "numeric",
             className: "ctd-input ctd-window-input",
             value: row.manualWindow.value === undefined ? "" : String(row.manualWindow.value),
-            placeholder: "Default " + formatWindow(row.window.tokens),
+            title: windowSourceLabel(row.window.source, row.window.tier),
             disabled: !writable,
             "aria-label": "Context window for " + row.name,
             onChange: (event: any) => handlers.onWindow(row.id, event.target.value),
           }))
-        : null,
-      h("span", { className: "ctd-chip" + (row.window.source === "default" ? " ctd-chip-dim" : "") },
-        formatWindow(row.window.tokens) + " · " + windowSourceLabel(row.window.source, row.window.tier)),
+        : h("span", { className: "ctd-chip", title: windowSourceLabel(row.window.source, row.window.tier) }, formatWindow(row.window.tokens)),
       row.described ? null : h("span", { className: "ctd-note" }, "not described by the catalog")));
 }
 
