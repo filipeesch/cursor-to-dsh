@@ -13,7 +13,7 @@ Register Cursor as a model provider named `cursor` for [DeepSeek Harness](https:
 - **Cache reuse**: one Cursor agent per DSH session, and only new content is sent. Tool results return into the same run.
 - **Per-call usage**: the provider's usage report for each model turn is what reaches the host, so throughput, token and context meters show what Cursor actually billed for that call.
 - **Honest model metadata**: the context window reported to the host is the tier Cursor accepted, including after an automatic step-down; a model the catalog does not describe falls back to a capacity published upstream, then to a manual value, then to a documented default.
-- **Configured in the product**: the plugin's own page in Settings -> Plugins stores the API key, picks which models are offered, and sets the context tier, Max Mode and Fast mode per model.
+- **Configured in the product**: the plugin's own page in Settings -> Plugins stores the API key, picks which models are offered, and sets the context tier and Fast mode per model with segmented controls that save as you change them.
 - **Stalls are visible**: a run that stops producing content is abandoned with a clear error and a diagnostic, instead of waiting forever.
 - **Images**: images in user messages and tool results are forwarded to Cursor.
 
@@ -77,12 +77,10 @@ The page covers everyday use. To pin values in a profile patch instead, override
     context: max
     models:
       "*":
-        maxMode: "off"
       deepseek-v41-flash-1017:
         enabled: true
         contextWindow: 1000000
     newModels: enabled
-    maxMode: "off"
     fast: "off"
     knownContext: "on"
     timing: "off"
@@ -92,10 +90,9 @@ The page covers everyday use. To pin values in a profile patch instead, override
 | Option | Default | Environment override | Meaning |
 |---|---|---|---|
 | `apiKeyEnv` | `CURSOR_API_KEY` | | Credential / environment variable that holds the Cursor API key |
-| `context` | `max` | `DSH_CURSOR_CONTEXT` | Global context tier preference: `max` (largest the Max Mode policy allows) or `min`. A model entry may name one of its offered tiers, such as `300k` |
-| `models` | none | | Per-model settings keyed by model id; `"*"` covers models without their own entry: `enabled`, `context`, `contextWindow` (tokens), `maxMode`, `fast` |
+| `context` | `max` | `DSH_CURSOR_CONTEXT` | Global context tier preference: `max` (largest offered) or `min`. A model entry may name one of its offered tiers, such as `300k`; the page's automatic choice follows this |
+| `models` | none | | Per-model settings keyed by model id; `"*"` covers models without their own entry: `enabled`, `context`, `contextWindow` (tokens), `fast` |
 | `newModels` | `enabled` | | Whether a model with no entry of its own is offered: `enabled` or `disabled` |
-| `maxMode` | `off` | | Cursor Max Mode, the extended-context mode Cursor bills differently: `off` never requests a Max-Mode-only tier, `on` requests the largest tier with the flag, `auto` leaves it to Cursor's catalog |
 | `fast` | `off` | | Cursor Fast (priority, higher-cost) mode: `off`, `on`, or `auto` to leave it to Cursor |
 | `knownContext` | `on` | | Fetch published model capacities from models.dev as the fallback: `on` or `off` |
 | `timing` | `off` | | Write one timing record per model step to the state directory: `on` or `off` |
@@ -116,7 +113,7 @@ Other environment variables:
 - Cursor reports usage **once per run**, accumulated over every model call the run made. The plugin divides that report by the number of calls the run served and reports it once, on the run's last call, so the host sees one request's worth of usage. Session totals therefore read as the run's average request rather than the sum of every call — without that division the context meter reads N times the real context and compaction triggers on a conversation that is not full. When Cursor reports nothing, the host is told nothing; the plugin never invents a number.
 - A tool call is handed to DSH as soon as it is ready: the collection window starts at **0 ms** and no part of the delivery waits for a usage report. When a sibling call arrives after its turn's delivery, the plugin learns how late it was and gives that model a window that would have covered the gap — never above 50 ms, and never when the gap is too wide to cover. A turn that carries a single tool call (the common PTC case) keeps the 0 ms window. A model whose gaps fit the ceiling pays that split once and batches afterwards; a model whose gaps exceed it keeps today's behaviour, where each such turn splits.
 - Not every Cursor model publishes a context tier: 13 of the 26 in the current catalog do not, including `deepseek-v41-flash-1017` and the `auto` entries. Those models use the capacity published upstream (models.dev) when it describes them, else a manual value, else the documented default (`200000`). The published value is a capacity the upstream catalog declares, not a capacity measured from Cursor.
-- Max Mode is the tier Cursor offers at the largest context, and it is billed differently. It stays off unless `maxMode` says otherwise, so `context: max` lands on the largest tier that runs without it.
+- Max Mode is legacy: Cursor removed it from the model picker for usage-based pricing (the upcharge was removed and larger windows are selected directly), so this plugin requests the largest context tier the model offers. Only legacy request-based plans still have the toggle, and the plugin never sends the flag.
 - `stop` is not supported (`UNSUPPORTED_OPTION`); `temperature` and `maxTokens` are ignored.
 
 ## Development

@@ -66,18 +66,24 @@ The page SHALL offer a single masked API key field with reveal and save controls
 
 ### Requirement: The model table is driven by the live catalog
 
-The page SHALL list every model the provider advertises with its display name, and SHALL offer only the controls that model's own catalog entry supports: a tier selector only when the entry publishes context tiers, a Fast control only when it publishes that parameter, and a Max Mode control only when a variant of that model requires Max Mode. For a model the catalog does not describe, the page SHALL offer only enablement and a context window, and SHALL mark the model as not described by the catalog. When the catalog cannot be read, the page SHALL state that the list is unavailable instead of presenting cached content as current.
+The page SHALL list every model the provider advertises on one line per model, ordered alphabetically by display name, with its display name and the controls that model's own catalog entry supports, rendered as inline segmented controls: a context selector only when the entry publishes context tiers, and a Fast control only when it publishes that parameter. The page SHALL NOT require opening a model to reach those controls. For a model the catalog does not describe, the page SHALL offer enablement and a context window only, and SHALL mark the model as not described by the catalog. When the catalog cannot be read, the page SHALL state that the list is unavailable instead of presenting cached content as current.
 
 #### Scenario: A model publishes tiers
 
 - **WHEN** a model's catalog entry publishes context tiers
-- **THEN** the page offers a tier selector listing exactly those tiers
-- **AND** marks which tiers require Max Mode
+- **THEN** the page renders an inline context selector listing exactly those tiers plus an automatic choice
+- **AND** the automatic choice resolves to the largest offered tier
 
 #### Scenario: A model publishes no Fast parameter
 
 - **WHEN** a model's catalog entry publishes no Fast parameter
 - **THEN** the page offers no Fast control for that model
+
+#### Scenario: The list is ordered
+
+- **WHEN** the catalog lists several models
+- **THEN** the page lists them alphabetically by display name
+- **AND** a model added later sorts into place without a code change
 
 #### Scenario: The catalog does not describe the model
 
@@ -93,23 +99,25 @@ The page SHALL list every model the provider advertises with its display name, a
 
 ### Requirement: Per-model settings are saved as configuration and reversible
 
-The page SHALL persist, per model, enablement, the selected tier, the context window, the Max Mode override and the Fast override. Clearing a value SHALL restore inheritance from the wildcard entry, the global policy, the published capacity or the documented default, as applicable. An invalid value SHALL be refused with a diagnostic and the stored configuration SHALL remain unchanged.
+The page SHALL persist, per model, enablement, the selected context tier, the context window and the Fast override, writing each change through after a short debounce and without an explicit save control. The page SHALL NOT show an in-flight indicator for those writes. Clearing a value SHALL restore inheritance from the wildcard entry, the global preference, the published capacity or the documented default, as applicable. A refused write SHALL roll the control back to the accepted value and SHALL show the refusal. The new-model default SHALL be written the same way.
 
 #### Scenario: A per-model value is saved
 
-- **WHEN** the user changes a model's tier and saves
+- **WHEN** the user changes a model's tier
 - **THEN** the stored configuration carries that tier for that model
+- **AND** the page offers no Save button for it
 
 #### Scenario: A value is cleared
 
-- **WHEN** the user clears a model's Fast override and saves
-- **THEN** the model follows the global Fast policy again
-- **AND** the stored entry no longer carries that field
+- **WHEN** the user selects the automatic tier for a model
+- **THEN** the stored entry no longer carries that field
+- **AND** the model follows the global preference again
 
 #### Scenario: An invalid value is refused
 
 - **WHEN** a submitted value fails host validation
-- **THEN** the page shows the diagnostic
+- **THEN** the page shows the refusal
+- **AND** the control returns to the accepted value
 - **AND** the stored configuration is unchanged
 
 ### Requirement: The new-model default is configurable
@@ -152,12 +160,12 @@ The page SHALL read the model catalog from a route served by the plugin, which S
 
 ### Requirement: Context provenance is visible
 
-For each model the page SHALL state where the advertised context window comes from: the provider's own tier, a capacity published upstream, a manual value, or the documented default. The page SHALL describe a published upstream capacity as a published value, not as a capacity measured from the provider.
+For each model the page SHALL make where the advertised context window comes from available on the control that shows it — the provider's own tier, a capacity published upstream, a manual value, a provider-documented capacity or the documented default — as the control's tooltip and accessible name. The page SHALL NOT dedicate a separate label to provenance. When the value cannot be edited it SHALL be shown as a chip carrying the number only. The page SHALL describe a published upstream capacity as a published value, not as a capacity measured from the provider.
 
 #### Scenario: The window comes from the provider
 
 - **WHEN** the model publishes context tiers
-- **THEN** the page attributes the window to the selected tier
+- **THEN** the page attributes the window to the selected tier on the control's tooltip
 
 #### Scenario: The window comes from upstream
 
@@ -170,10 +178,21 @@ For each model the page SHALL state where the advertised context window comes fr
 - **WHEN** neither a tier nor a published capacity applies and a manual value is set
 - **THEN** the page attributes the window to the manual value
 
+#### Scenario: The window comes from the provider's documentation
+
+- **WHEN** neither a tier nor a published capacity applies and the provider documents a capacity for the model
+- **THEN** the page shows that number in the model's window field
+- **AND** attributes it to the provider's documentation on the tooltip
+
 #### Scenario: The window is the default
 
 - **WHEN** nothing describes the model
 - **THEN** the page attributes the window to the documented default
+
+#### Scenario: The row carries no provenance label
+
+- **WHEN** the page renders a model row
+- **THEN** the row shows the window value without a provenance label beside it
 
 ### Requirement: Saving applies without restarting the plugin
 

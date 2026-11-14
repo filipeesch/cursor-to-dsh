@@ -6,16 +6,14 @@
       config:
         # Credential / environment variable that holds the Cursor API key.
         apiKeyEnv: CURSOR_API_KEY
-        # Global context tier preference: max (largest the Max Mode policy allows) or min.
+        # Global context tier preference: max (largest offered) or min.
         context: max
         # Per-model settings keyed by model id; "*" covers models without their own entry:
         #   "<id>": { enabled: bool, context: max|min|<tier>, contextWindow: tokens,
-        #             maxMode: off|on|auto, fast: off|on|auto }
+        #             fast: off|on|auto }
         models: {}
         # Whether a model with no entry of its own is offered: enabled | disabled.
         newModels: enabled
-        # Cursor Max Mode (extended context, billed differently): off | on | auto.
-        maxMode: "off"
         # Cursor Fast (priority, higher-cost) mode: off | on | auto.
         fast: "off"
         # Fetch published model capacities from models.dev as a fallback: on | off.

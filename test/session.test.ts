@@ -601,26 +601,6 @@ test("models: the advertised window is the accepted tier, with an explicit overr
   assert.deepEqual((await offline.listModels("cursor")).map((m: any) => m.id), FALLBACK_MODELS.map((m) => m.id));
 });
 
-test("Max Mode reaches agent creation only when the policy asks for it", async () => {
-  const offCursor = fakeCursor(async function* (ctx: any) {
-    ctx.say("ok");
-  });
-  await call(adapterFor(offCursor, { policy: { ...DEFAULT_POLICY, maxMode: "off" } }), [user("hi")]);
-  assert.equal(offCursor.created[0].model.maxMode, undefined, "off never sends the flag");
-
-  const autoCursor = fakeCursor(async function* (ctx: any) {
-    ctx.say("ok");
-  });
-  await call(adapterFor(autoCursor, { policy: { ...DEFAULT_POLICY, maxMode: "auto" } }), [user("hi")]);
-  assert.equal(autoCursor.created[0].model.maxMode, undefined, "auto leaves the decision to the provider");
-
-  const onCursor = fakeCursor(async function* (ctx: any) {
-    ctx.say("ok");
-  });
-  await call(adapterFor(onCursor, { policy: { ...DEFAULT_POLICY, maxMode: "on" } }), [user("hi")]);
-  assert.equal(onCursor.created[0].model.maxMode, true, "on sends the flag");
-});
-
 test("models: the published capacity fills a model the tier does not describe", async () => {
   const adapter = adapterFor(fakeCursor(async function* () {}), {
     publishedWindow: (modelId: string) => (modelId === "m" ? 1_048_576 : undefined),
@@ -654,26 +634,6 @@ test("models: the policy is read per call, so a saved setting applies without a 
   env.policy = { ...DEFAULT_POLICY, models: { m: { contextWindow: 262_144 }, claude: { enabled: false } } };
   assert.equal((await adapter.resolveModel("cursor", "m")).context.contextWindow, 262_144);
   assert.deepEqual((await adapter.listModels("cursor")).map((model: any) => model.id), ["m"]);
-});
-
-test("models: a per-model Max Mode policy reaches agent creation", async () => {
-  const cursor = fakeCursor(async function* (ctx: any) {
-    ctx.say("ok");
-  });
-  await call(adapterFor(cursor, {
-    catalog: (() => {
-      const models = [{ id: "m", parameters: [{ id: "context", values: [{ value: "300k" }, { value: "1m" }] }], variants: [
-        { params: [{ id: "context", value: "300k" }] },
-        { params: [{ id: "context", value: "1m" }], isMaxMode: true },
-      ] }];
-      const catalog = new ModelCatalog({ listModels: async () => models, resolveApiKey: async () => "k" });
-      catalog.load({ models, live: true, fetchedAt: Date.now() });
-      return catalog;
-    })(),
-    policy: { ...DEFAULT_POLICY, models: { m: { maxMode: "on" } } },
-  }), [user("hi")]);
-  assert.equal(cursor.created[0].model.maxMode, true);
-  assert.deepEqual(cursor.created[0].model.params.filter((p: any) => p.id === "context"), [{ id: "context", value: "1m" }]);
 });
 
 test("auxiliary calls (session titles) get their own agent and leave the session alone", async () => {
@@ -895,4 +855,3 @@ test("the seen snapshot is the request's own fingerprints, one pass per call", a
   const expected = [...request.map(fingerprint), fingerprint(r1.assistant)];
   assert.deepEqual(session.seen, expected);
 });
-

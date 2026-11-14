@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { resolveSettings } from "../src/config.ts";
 import { DEFAULT_CONTEXT_WINDOW, resolveContextWindow } from "../src/policy/context.ts";
-import { contextPreferenceFor, entryFor, fastFor, isEnabled, maxModeFor } from "../src/policy/model-config.ts";
+import { contextPreferenceFor, entryFor, fastFor, isEnabled } from "../src/policy/model-config.ts";
 import { buildPolicy, ModelPolicySource } from "../src/policy/source.ts";
 import { DEFAULT_POLICY } from "../src/policy/types.ts";
 
@@ -19,9 +19,8 @@ const undescribed = { parameters: [{ id: "reasoning_effort", values: v("low", "h
 
 test("configuration resolves into a policy with documented defaults", () => {
   assert.deepEqual(buildPolicy({}), DEFAULT_POLICY);
-  assert.deepEqual(buildPolicy({ context: "min", maxMode: "on", fast: "auto", newModels: "disabled" }), {
+  assert.deepEqual(buildPolicy({ context: "min", fast: "auto", newModels: "disabled" }), {
     context: "min",
-    maxMode: "on",
     fast: "auto",
     newModels: "disabled",
     models: {},
@@ -29,9 +28,8 @@ test("configuration resolves into a policy with documented defaults", () => {
 });
 
 test("unusable values fall back to the documented default instead of failing", () => {
-  const policy = buildPolicy({ context: "300k", maxMode: "maybe", fast: "sometimes", newModels: "nope", models: { "": { enabled: true } } });
+  const policy = buildPolicy({ context: "300k", fast: "sometimes", newModels: "nope", models: { "": { enabled: true } } });
   assert.equal(policy.context, "max", "a global literal tier is not a preference");
-  assert.equal(policy.maxMode, "off");
   assert.equal(policy.fast, "off");
   assert.equal(policy.newModels, "enabled");
   assert.deepEqual(policy.models, {}, "an entry with no id is dropped");
@@ -40,22 +38,21 @@ test("unusable values fall back to the documented default instead of failing", (
 test("model entries keep only usable fields", () => {
   const policy = buildPolicy({
     models: {
-      m: { enabled: false, context: "300k", contextWindow: "400000", maxMode: "on", fast: "auto" },
-      bad: { enabled: "yes", context: "  ", contextWindow: -3, maxMode: "x", fast: "y" },
+      m: { enabled: false, context: "300k", contextWindow: "400000", fast: "auto" },
+      bad: { enabled: "yes", context: "  ", contextWindow: -3, fast: "y" },
       "*": { contextWindow: 1_000_000 },
     },
   });
-  assert.deepEqual(policy.models.m, { enabled: false, context: "300k", contextWindow: 400_000, maxMode: "on", fast: "auto" });
+  assert.deepEqual(policy.models.m, { enabled: false, context: "300k", contextWindow: 400_000, fast: "auto" });
   assert.equal(policy.models.bad, undefined, "an entry with no usable field is dropped");
   assert.deepEqual(policy.models["*"], { contextWindow: 1_000_000 });
 });
 
 test("the wildcard entry covers a model without its own", () => {
-  const policy = buildPolicy({ maxMode: "off", fast: "off", models: { "*": { contextWindow: 1_000_000, fast: "on" }, m: { enabled: false } } });
+  const policy = buildPolicy({ fast: "off", models: { "*": { contextWindow: 1_000_000, fast: "on" }, m: { enabled: false } } });
   assert.deepEqual(entryFor(policy, "other"), { contextWindow: 1_000_000, fast: "on" });
   assert.deepEqual(entryFor(policy, "m"), { contextWindow: 1_000_000, fast: "on", enabled: false });
   assert.equal(fastFor(policy, "other"), "on");
-  assert.equal(maxModeFor(policy, "other"), "off");
   assert.equal(contextPreferenceFor(policy, "other"), "max");
 });
 
@@ -68,13 +65,13 @@ test("a model with no entry follows the new-model default", () => {
 
 test("the advertised window comes from the tier the policy will request", () => {
   const window = resolveContextWindow({ modelId: "claude", model: tiered, policy: DEFAULT_POLICY });
-  assert.deepEqual(window, { tokens: 300_000, source: "tier", tier: "300k" });
-  assert.deepEqual(resolveContextWindow({ modelId: "claude", model: tiered, policy: { ...DEFAULT_POLICY, maxMode: "on" } }), {
-    tokens: 1_000_000,
+  assert.deepEqual(window, { tokens: 1_000_000, source: "tier", tier: "1m" });
+  assert.deepEqual(resolveContextWindow({ modelId: "claude", model: tiered, policy: { ...DEFAULT_POLICY, context: "min" } }), {
+    tokens: 300_000,
     source: "tier",
-    tier: "1m",
+    tier: "300k",
   });
-  assert.equal(resolveContextWindow({ modelId: "claude", model: tiered, accepted: "1m", policy: { ...DEFAULT_POLICY, maxMode: "on" } }).tokens, 1_000_000);
+  assert.equal(resolveContextWindow({ modelId: "claude", model: tiered, accepted: "300k", policy: DEFAULT_POLICY }).tokens, 300_000);
 });
 
 test("the published capacity beats a manual value, and the default comes last", () => {
@@ -88,9 +85,24 @@ test("the published capacity beats a manual value, and the default comes last", 
   assert.deepEqual(fallback, { tokens: DEFAULT_CONTEXT_WINDOW, source: "default" });
 });
 
+test("a model the provider documents fills the gap the catalog and the public catalog leave", () => {
+  const window = resolveContextWindow({ modelId: "composer-2.5", model: {}, policy: DEFAULT_POLICY });
+  assert.deepEqual(window, { tokens: 200_000, source: "documented" });
+  assert.deepEqual(resolveContextWindow({ modelId: "composer-2.5", model: {}, policy: DEFAULT_POLICY, publishedWindow: 1_048_576 }), {
+    tokens: 1_048_576,
+    source: "published",
+  }, "a published capacity still wins");
+  assert.equal(
+    resolveContextWindow({ modelId: "composer-2.5", model: {}, policy: { ...DEFAULT_POLICY, models: { "composer-2.5": { contextWindow: 500_000 } } } }).source,
+    "manual",
+    "a manual value overrides the documented capacity",
+  );
+  assert.equal(resolveContextWindow({ modelId: "composer-2", model: {}, policy: DEFAULT_POLICY }).source, "default");
+});
+
 test("a manual value never overrides a provider tier", () => {
   const window = resolveContextWindow({ modelId: "claude", model: tiered, policy: { ...DEFAULT_POLICY, models: { claude: { contextWindow: 400_000 } } } });
-  assert.deepEqual(window, { tokens: 300_000, source: "tier", tier: "300k" });
+  assert.deepEqual(window, { tokens: 1_000_000, source: "tier", tier: "1m" });
 });
 
 test("the policy source reads the live configuration on every call", () => {

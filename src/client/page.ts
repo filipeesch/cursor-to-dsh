@@ -1,16 +1,27 @@
 /**
- * The stateful page: it owns the draft, the expanded row and the in-flight writes, and renders the
- * pure components in `views.ts`.
+ * The stateful page: it owns the optimistic values, the key state and the debounced writes, and
+ * renders the hook-free components in `views.ts`.
  *
- * The draft starts from the host's accepted values and is saved as path operations against them, so
- * a field the page cannot see is never deleted by a save.
+ * A control change updates the view at once and schedules one write after a short quiet period, so
+ * there is no save button and no in-flight indicator. A refused write is the only thing the page
+ * announces for settings, and it rolls the control back to what the host accepted.
  */
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import type { PathOp } from "./derive.ts";
-import { derivePage, diffPaths, keyRefOf, parseWindow, withGlobals, withModelPatch, type ConfigValues } from "./derive.ts";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Autosave } from "./autosave.ts";
+import {
+  derivePage,
+  keyRefOf,
+  modelFieldOps,
+  newModelsOps,
+  parseWindow,
+  withGlobals,
+  withModelPatch,
+  type ConfigValues,
+  type PathOp,
+} from "./derive.ts";
 import type { CatalogController } from "./controller.ts";
 import type { ModelSettings } from "../policy/types.ts";
-import { PageView, SummaryView, type PageHandlers, type PageState } from "./views.ts";
+import { PageView, SummaryView, type PageHandlers, type PageState, type Segmented } from "./views.ts";
 
 /** The host form snapshot the plugin page hands over, narrowed to what this page reads. */
 export interface RowConfigSnapshot {
@@ -33,6 +44,8 @@ export interface RowConfigProps {
   view: "summary" | "page";
   form?: RowConfigForm;
   controller: CatalogController;
+  /** The product's segmented control, injected by the plugin entry. */
+  segmented: Segmented;
 }
 
 function messageOf(error: unknown): string {
@@ -45,62 +58,69 @@ function messageOf(error: unknown): string {
  * @returns the summary line or the page.
  */
 export function CursorRowConfig(props: RowConfigProps): any {
-  const { view, form, controller } = props;
+  const { view, controller, segmented } = props;
   const external = useSyncExternalStore(controller.subscribe, controller.getState, controller.getState);
-  const accepted = (form?.state?.value ?? {}) as ConfigValues;
+  const accepted = (props.form?.state?.value ?? {}) as ConfigValues;
   const acceptedKey = JSON.stringify(accepted);
-  const [draft, setDraft] = useState<ConfigValues>(accepted);
-  const [dirty, setDirty] = useState(false);
-  const [expanded, setExpanded] = useState<string | undefined>(undefined);
-  const [saving, setSaving] = useState(false);
+  const formRef = useRef<RowConfigForm | undefined>(props.form);
+  formRef.current = props.form;
+  const acceptedRef = useRef<ConfigValues>(accepted);
+  acceptedRef.current = accepted;
+
+  const [values, setValues] = useState<ConfigValues>(accepted);
   const [message, setMessage] = useState<{ kind: "saved" | "error"; text: string } | undefined>(undefined);
   const [keyValue, setKeyValue] = useState("");
   const [keyBusy, setKeyBusy] = useState(false);
   // A stored key keeps the field closed until the user asks to change it.
   const [editingKey, setEditingKey] = useState(false);
-  const [newModelsBusy, setNewModelsBusy] = useState(false);
 
-  const reference = keyRefOf(accepted);
-  const writable = form?.state?.writable !== false;
+  const autosaveRef = useRef<Autosave | undefined>(undefined);
+  if (!autosaveRef.current) {
+    autosaveRef.current = new Autosave({
+      write: (ops, revision) => (formRef.current ? formRef.current.mutate(ops, revision) : Promise.resolve(false)),
+      onFailure: (error) => {
+        setValues(acceptedRef.current);
+        setMessage({ kind: "error", text: "The change was not saved: " + messageOf(error) });
+      },
+    });
+  }
+
+  useEffect(() => () => {
+    autosaveRef.current?.dispose();
+  }, []);
 
   useEffect(() => {
     void controller.loadCatalog();
   }, [controller]);
 
+  const reference = keyRefOf(accepted);
   useEffect(() => {
     void controller.loadKey(reference);
   }, [controller, reference]);
 
-  // Adopt the host's values while the user has no unsaved edits of their own.
+  // Adopt the host's values once nothing of ours is still on its way.
   useEffect(() => {
-    if (!dirty) setDraft(accepted);
-  }, [acceptedKey, dirty]);
+    if (autosaveRef.current?.size === 0) setValues(accepted);
+  }, [acceptedKey]);
 
-  const derived = useMemo(() => derivePage(draft, external.catalog), [draft, external.catalog]);
-
-  const edit = (next: ConfigValues): void => {
-    setDraft(next);
-    setDirty(true);
+  const change = (field: string, next: ConfigValues, ops: PathOp[]): void => {
+    setValues(next);
     setMessage(undefined);
+    autosaveRef.current?.schedule(field, ops, formRef.current?.state.revision);
   };
 
   const handlers: PageHandlers = {
     onReload: () => {
       void controller.loadCatalog();
     },
-    onSave: () => {
-      void save();
+    onToggleEnabled: (id, enabled) => change("models." + id + ".enabled", withModelPatch(values, id, { enabled }), modelFieldOps(id, "enabled", enabled)),
+    onTier: (id, value) => change("models." + id + ".context", withModelPatch(values, id, { context: value }), modelFieldOps(id, "context", value)),
+    onWindow: (id, text) => {
+      const tokens = parseWindow(text);
+      change("models." + id + ".contextWindow", withModelPatch(values, id, { contextWindow: tokens }), modelFieldOps(id, "contextWindow", tokens));
     },
-    onToggleEnabled: (id, enabled) => edit(withModelPatch(draft, id, { enabled })),
-    onExpand: (id) => setExpanded((current) => (current === id ? undefined : id)),
-    onTier: (id, value) => edit(withModelPatch(draft, id, { context: value })),
-    onWindow: (id, text) => edit(withModelPatch(draft, id, { contextWindow: parseWindow(text) })),
-    onFast: (id, value) => edit(withModelPatch(draft, id, { fast: value as ModelSettings["fast"] })),
-    onMaxMode: (id, value) => edit(withModelPatch(draft, id, { maxMode: value as ModelSettings["maxMode"] })),
-    onContext: (value) => edit(withGlobals(draft, { context: value })),
-    onNewModels: (enabled) => {
-      void saveNewModels(enabled);
-    },
+    onFast: (id, value) => change("models." + id + ".fast", withModelPatch(values, id, { fast: value as ModelSettings["fast"] }), modelFieldOps(id, "fast", value)),
+    onNewModels: (enabled) => change("newModels", withGlobals(values, { newModels: enabled ? "enabled" : "disabled" }), newModelsOps(enabled)),
     onKeyValue: setKeyValue,
     onSaveKey: () => {
       void saveKey();
@@ -111,52 +131,6 @@ export function CursorRowConfig(props: RowConfigProps): any {
       setKeyValue("");
     },
   };
-
-  async function save(): Promise<void> {
-    if (!form) return;
-    setSaving(true);
-    setMessage(undefined);
-    try {
-      const ops = diffPaths(accepted, draft);
-      if (ops.length === 0) {
-        setDirty(false);
-        setMessage({ kind: "saved", text: "Nothing to save." });
-        return;
-      }
-      const acceptedWrite = await form.mutate(ops, form.state.revision);
-      if (acceptedWrite === false) {
-        setMessage({ kind: "error", text: "The host refused the change; nothing was saved." });
-        return;
-      }
-      setDirty(false);
-      setMessage({ kind: "saved", text: "Saved." });
-    } catch (error: unknown) {
-      setMessage({ kind: "error", text: "The save failed: " + messageOf(error) });
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  /** The new-model default has no draft: toggling it writes straight through. */
-  async function saveNewModels(enabled: boolean): Promise<void> {
-    if (!form) return;
-    const value = enabled ? "enabled" : "disabled";
-    setNewModelsBusy(true);
-    setMessage(undefined);
-    try {
-      const acceptedWrite = await form.mutate([{ op: "set", path: ["newModels"], value }], form.state.revision);
-      if (acceptedWrite === false) {
-        setMessage({ kind: "error", text: "The host refused the change; nothing was saved." });
-        return;
-      }
-      setDraft((current) => withGlobals(current, { newModels: value }));
-      setMessage({ kind: "saved", text: "Saved." });
-    } catch (error: unknown) {
-      setMessage({ kind: "error", text: "The save failed: " + messageOf(error) });
-    } finally {
-      setNewModelsBusy(false);
-    }
-  }
 
   async function saveKey(): Promise<void> {
     const value = keyValue.trim();
@@ -179,21 +153,15 @@ export function CursorRowConfig(props: RowConfigProps): any {
     }
   }
 
-  if (view === "summary") return SummaryView({ derived });
+  if (view === "summary") return SummaryView({ derived: derivePage(values, external.catalog) });
 
   const state: PageState = {
-    derived,
-    expanded,
+    derived: derivePage(values, external.catalog),
     catalogLoading: external.loading && external.catalog === undefined,
     ...(external.catalogError === undefined ? {} : { catalogError: external.catalogError }),
-    ...(external.catalog?.knownContext.fetchedAt === undefined ? {} : { catalogAge: external.catalog.knownContext.fetchedAt }),
-    knownContextEnabled: external.catalog?.knownContext.enabled ?? true,
     key: { reference, value: keyValue, configured: external.key.configured, busy: keyBusy, editing: editingKey },
-    saving,
-    savingNewModels: newModelsBusy,
-    dirty,
-    writable,
+    writable: props.form?.state?.writable !== false,
     ...(message === undefined ? {} : { message }),
   };
-  return PageView({ state, handlers });
+  return PageView({ state, handlers, segmented });
 }

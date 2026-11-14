@@ -2,8 +2,8 @@
  * The catalog document the configuration page reads.
  *
  * It carries only what a catalog-driven form needs: identity, the parameters each model publishes,
- * the variants that decide whether a tier or a speed needs Max Mode, and the published capacity the
- * fallback found. No credential, key or token material ever enters this shape.
+ * the variants Cursor publishes, and the published capacity the fallback found. No credential, key
+ * or token material ever enters this shape.
  */
 import { modelNames, type CatalogModel, type Param } from "./model-catalog.ts";
 import { PROVIDER_ID } from "./constants.ts";
@@ -15,7 +15,7 @@ export interface CatalogParameterView {
   values: { value: string; displayName?: string }[];
 }
 
-/** One selectable variant and whether Cursor only offers it in Max Mode. */
+/** One selectable variant; `isMaxMode` is the provider's own marking, kept for fidelity. */
 export interface CatalogVariantView {
   params: Param[];
   displayName?: string;
@@ -89,13 +89,17 @@ function variantsOfModel(model: CatalogModel): CatalogVariantView[] {
  */
 export function catalogPayload(args: CatalogPayloadArgs): CatalogPayload {
   const names = modelNames(args.models);
+  // Ordered for the reader: the page lists this document as it is, so the order lives here rather
+  // than in one view. Display names are compared the way a person sorts them.
+  const ordered = [...args.models].sort((left, right) =>
+    (names.get(left.id) ?? left.id).localeCompare(names.get(right.id) ?? right.id, undefined, { sensitivity: "base" }));
   return {
     version: 1,
     provider: PROVIDER_ID,
     rowId: args.rowId,
     settingsNs: args.settingsNs,
     knownContext: args.knownContext,
-    models: args.models.map((model) => {
+    models: ordered.map((model) => {
       const view: CatalogModelView = {
         id: model.id,
         name: names.get(model.id) ?? model.id,
