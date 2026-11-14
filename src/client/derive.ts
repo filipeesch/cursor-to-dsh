@@ -1,5 +1,5 @@
 /**
- * The configuration page's pure logic: what each model row shows, and what a save writes.
+ * The configuration page's pure logic: what each model row shows, and what a change writes.
  *
  * Everything here is a pure function of the host's accepted configuration and the catalog the route
  * serves, so the page's behavior can be tested without a browser and the same resolution the Host
@@ -7,22 +7,19 @@
  */
 import type { CatalogModelView, CatalogPayload } from "../catalog-payload.ts";
 import { DEFAULT_KEY_REF } from "../constants.ts";
-import { contextTierValue, hasMaxModeVariants, offeredTiers, requiresMaxMode } from "../model-tiers.ts";
+import { offeredTiers } from "../model-tiers.ts";
 import { resolveContextWindow, type ContextWindowResolution } from "../policy/context.ts";
-import { contextPreferenceFor, entryFor, fastFor, isEnabled, maxModeFor } from "../policy/model-config.ts";
+import { entryFor, isEnabled } from "../policy/model-config.ts";
 import { buildPolicy } from "../policy/source.ts";
-import type { FastMode, MaxMode, ModelSettings } from "../policy/types.ts";
+import type { FastMode, ModelSettings, NewModelDefault } from "../policy/types.ts";
 
 /** The host's accepted configuration section, as the form hands it over. */
 export type ConfigValues = Record<string, unknown>;
 
-/** One tier as the row's selector lists it. */
+/** One tier as a row's selector lists it. */
 export interface RowTier {
   value: string;
-  tokens: number;
-  /** Whether Cursor only offers this tier in Max Mode. */
-  maxMode: boolean;
-  selected: boolean;
+  label: string;
 }
 
 /** One model row as the page renders it. */
@@ -34,31 +31,25 @@ export interface ModelRow {
   described: boolean;
   /** Whether the stored configuration carries an entry of its own. */
   configured: boolean;
-  tiers: RowTier[];
   tierOffered: boolean;
-  /** The stored tier override, when one is set. */
-  tierOverride?: string;
+  /** The stored tier override; undefined means the automatic choice. */
+  tierValue?: string;
+  /** The offered tiers, in catalog order (smallest first). */
+  tierOptions: RowTier[];
+  fastOffered: boolean;
+  fastValue?: FastMode;
   window: ContextWindowResolution;
   /** The manual window field: editable only when nothing more authoritative applies. */
   manualWindow: { editable: boolean; value?: number };
-  fastOffered: boolean;
-  fastValue?: FastMode;
-  /** The value Fast mode inherits when the model has no override. */
-  fastInherited: FastMode;
-  maxModeOffered: boolean;
-  maxModeValue?: MaxMode;
-  /** The value Max Mode inherits when the model has no override. */
-  maxModeInherited: MaxMode;
 }
 
 /** Everything the page renders for one accepted configuration. */
 export interface DerivedPage {
-  context: "max" | "min";
-  newModels: "enabled" | "disabled";
   rows: ModelRow[];
   enabledCount: number;
   /** Explicit model entries, excluding the wildcard. */
   overrides: number;
+  newModels: NewModelDefault;
 }
 
 /** The catalog entry shape the shared resolution functions read. */
@@ -70,14 +61,13 @@ function entryOf(view: CatalogModelView): { parameters: CatalogModelView["parame
  * Derive the page from the accepted configuration and the catalog.
  * @param values - accepted configuration section.
  * @param payload - catalog the route served, or undefined while it loads.
- * @returns the rows and the global values the page renders.
+ * @returns the rows and the values the page renders.
  */
 export function derivePage(values: ConfigValues | undefined, payload: CatalogPayload | undefined): DerivedPage {
   const policy = buildPolicy(values ?? {});
   const rows: ModelRow[] = (payload?.models ?? []).map((view) => {
     const model = entryOf(view);
     const entry = entryFor(policy, view.id);
-    const requestedTier = contextTierValue(model, view.acceptedTier, contextPreferenceFor(policy, view.id), maxModeFor(policy, view.id));
     const window = resolveContextWindow({
       modelId: view.id,
       model,
@@ -92,28 +82,23 @@ export function derivePage(values: ConfigValues | undefined, payload: CatalogPay
       enabled: isEnabled(policy, view.id),
       described: view.parameters.length > 0 || view.variants.length > 0,
       configured: policy.models[view.id] !== undefined,
-      tiers: tiers.map((tier) => ({ value: tier.value, tokens: tier.tokens, maxMode: requiresMaxMode(model, tier.value), selected: tier.value === requestedTier })),
       tierOffered: tiers.length > 0,
-      ...(entry.context === undefined ? {} : { tierOverride: entry.context }),
+      ...(entry.context === undefined ? {} : { tierValue: entry.context }),
+      tierOptions: tiers.map((tier) => ({ value: tier.value, label: formatWindow(tier.tokens) })),
+      fastOffered: view.parameters.some((parameter) => parameter.id === "fast"),
+      ...(entry.fast === undefined ? {} : { fastValue: entry.fast }),
       window,
       manualWindow: {
         editable: window.source !== "tier" && window.source !== "published",
         ...(entry.contextWindow === undefined ? {} : { value: entry.contextWindow }),
       },
-      fastOffered: view.parameters.some((parameter) => parameter.id === "fast"),
-      ...(entry.fast === undefined ? {} : { fastValue: entry.fast }),
-      fastInherited: fastFor(policy, undefined),
-      maxModeOffered: hasMaxModeVariants(model),
-      ...(entry.maxMode === undefined ? {} : { maxModeValue: entry.maxMode }),
-      maxModeInherited: maxModeFor(policy, undefined),
     };
   });
   return {
-    context: policy.context === "min" ? "min" : "max",
-    newModels: policy.newModels,
     rows,
     enabledCount: rows.filter((row) => row.enabled).length,
     overrides: Object.keys(policy.models).filter((id) => id !== "*").length,
+    newModels: policy.newModels,
   };
 }
 
@@ -194,6 +179,17 @@ export function withGlobals(values: ConfigValues | undefined, patch: Record<stri
     else next[field] = value;
   }
   return next;
+}
+
+/** The path operations that write one model field, or clear it. */
+export function modelFieldOps(modelId: string, field: keyof ModelSettings, value: unknown): PathOp[] {
+  const path = ["models", modelId, field];
+  return value === undefined || value === null || value === "" ? [{ op: "unset", path }] : [{ op: "set", path, value }];
+}
+
+/** The path operations that write the new-model default. */
+export function newModelsOps(enabled: boolean): PathOp[] {
+  return [{ op: "set", path: ["newModels"], value: enabled ? "enabled" : "disabled" }];
 }
 
 /** The credential reference in effect: the configured name, else the plugin's default. */

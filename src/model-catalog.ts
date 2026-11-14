@@ -24,7 +24,7 @@ export interface Param {
   value: string;
 }
 
-/** One selectable combination of parameters, and whether Cursor only offers it in Max Mode. */
+/** One selectable combination of parameters. `isMaxMode` is the provider's own marking, kept for fidelity: Max Mode is legacy and the plugin does not act on it. */
 export interface CatalogVariant {
   params?: Param[];
   displayName?: string;

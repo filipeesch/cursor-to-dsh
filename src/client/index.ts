@@ -14,6 +14,19 @@ import { CatalogController } from "./controller.ts";
 import { CursorRowConfig } from "./page.ts";
 import { STYLES } from "./styles.ts";
 
+// The module table supplies the shared UI primitives to every plugin bundle. The bundle's factory
+// receives `require`; a plain ESM import of this file (tests) has none, so the lookup is guarded.
+declare const require: (id: string) => any;
+
+function loadPrimitives(): { SegmentedControl?: any } {
+  if (typeof require !== "function") return {};
+  try {
+    return require("@deepseek-ai/dsh-client-ui-primitives") ?? {};
+  } catch {
+    return {};
+  }
+}
+
 /** Bumped whenever the catalog document changes shape; the page refuses what it cannot read. */
 const PAYLOAD_VERSION = 1;
 
@@ -90,6 +103,7 @@ export function apply(ctx: ClientContext): void {
   });
   ctx.effect(installStyles, "cursor-to-dsh: styles");
 
+  const { SegmentedControl } = loadPrimitives();
   const registrations = new Map<string, () => void>();
   // Row ids the route reported; remembered so a re-declared slot registers them again.
   const discovered = new Set<string>();
@@ -102,7 +116,7 @@ export function apply(ctx: ClientContext): void {
       name: "plugins.row.config",
       id: PACKAGE_NAME,
       key,
-      inject: () => ({ controller }),
+      inject: () => ({ controller, segmented: SegmentedControl }),
     }, CursorRowConfig));
   };
 

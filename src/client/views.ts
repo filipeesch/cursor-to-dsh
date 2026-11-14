@@ -1,28 +1,40 @@
 /**
  * The configuration page's presentational components.
  *
- * Each one is a pure function of its props: the stateful container in `page.ts` owns drafts,
- * expanded rows and in-flight writes, and these render exactly what it passes in. Keeping them
- * hook-free is what lets a test render a row or a state by calling the function.
+ * Each one is a pure function of its props: the stateful container in `page.ts` owns the optimistic
+ * values, the key state and the debounced writes, and these render exactly what it passes in.
+ * Keeping them hook-free is what lets a test render a row or a state by calling the function.
  */
 import { createElement as h } from "react";
 import type { ModelRow } from "./derive.ts";
-import { formatWindow, windowSourceLabel } from "./derive.ts";
-import type { DerivedPage } from "./derive.ts";
+import { formatWindow, windowSourceLabel, type DerivedPage } from "./derive.ts";
 import { PACKAGE_NAME } from "../constants.ts";
+
+/** One segment of the product's segmented control. */
+export interface SegmentedOption {
+  value: string;
+  label: string;
+  disabled?: boolean;
+  title?: string;
+}
+
+/** The product's segmented control, injected by the plugin entry so the views stay testable. */
+export type Segmented = (props: {
+  id: string;
+  value: string;
+  options: readonly SegmentedOption[];
+  onChange: (next: string) => void;
+  label: string;
+  disabled?: boolean;
+}) => any;
 
 /** Every interaction the page offers. */
 export interface PageHandlers {
   onReload: () => void;
-  onSave: () => void;
   onToggleEnabled: (id: string, enabled: boolean) => void;
-  onExpand: (id: string) => void;
   onTier: (id: string, value: string | undefined) => void;
   onWindow: (id: string, text: string) => void;
   onFast: (id: string, value: string | undefined) => void;
-  onMaxMode: (id: string, value: string | undefined) => void;
-  onContext: (value: string) => void;
-  /** Write the new-model default immediately; this control has no draft. */
   onNewModels: (enabled: boolean) => void;
   onKeyValue: (value: string) => void;
   onSaveKey: () => void;
@@ -35,11 +47,8 @@ export interface PageHandlers {
 /** Everything the page shows. */
 export interface PageState {
   derived: DerivedPage;
-  expanded: string | undefined;
   catalogLoading: boolean;
   catalogError?: string;
-  catalogAge?: number;
-  knownContextEnabled: boolean;
   key: {
     reference: string;
     value: string;
@@ -48,11 +57,8 @@ export interface PageState {
     /** Whether the field is open to replace a stored key. */
     editing: boolean;
   };
-  saving: boolean;
-  /** Whether the new-model toggle has an immediate write in flight. */
-  savingNewModels: boolean;
-  dirty: boolean;
   writable: boolean;
+  /** Only failures and the key confirmation ever produce one. */
   message?: { kind: "saved" | "error"; text: string };
 }
 
@@ -106,97 +112,19 @@ export function KeySection(props: { state: PageState; handlers: PageHandlers }):
     h("p", { className: "ctd-status " + (key.configured === true ? "ctd-status-ok" : key.configured === false ? "ctd-status-warn" : "ctd-status-dim") }, keyStatusText(key.configured, key.reference))));
 }
 
-/** The global context preference. */
-export function ContextSection(props: { state: PageState; handlers: PageHandlers }): any {
-  const { derived, writable } = props.state;
-  return section("Context", "Applies to every model without its own tier. The provider tier wins when a model publishes one.", h("label", { className: "ctd-field" },
-    h("span", { className: "ctd-field-label" }, "Default tier"),
-    h("select", {
-      className: "ctd-input ctd-select",
-      value: derived.context,
-      disabled: !writable,
-      "aria-label": "Default context tier",
-      onChange: (event: any) => props.handlers.onContext(event.target.value),
-    },
-    h("option", { value: "max" }, "Largest the Max Mode policy allows"),
-    h("option", { value: "min" }, "Smallest offered"))));
+function tierOptions(row: ModelRow): { value: string; label: string }[] {
+  return [{ value: "", label: "Auto" }, ...row.tierOptions];
 }
 
-function option(value: string, label: string): any {
-  return h("option", { key: value, value }, label);
-}
+const FAST_OPTIONS = [
+  { value: "", label: "Auto" },
+  { value: "off", label: "Off" },
+  { value: "on", label: "On" },
+];
 
-function tierLabel(tier: ModelRow["tiers"][number]): string {
-  return formatWindow(tier.tokens) + (tier.maxMode ? " - Max Mode" : "");
-}
-
-/** One model's expanded settings. */
-export function ModelOptions(props: { row: ModelRow; writable: boolean; handlers: PageHandlers }): any {
-  const { row, writable } = props;
-  const { handlers } = props;
-  const disabled = !writable;
-  const children: any[] = [];
-  if (row.tierOffered) {
-    children.push(h("label", { key: "tier", className: "ctd-field" },
-      h("span", { className: "ctd-field-label" }, "Context tier"),
-      h("select", {
-        className: "ctd-input ctd-select",
-        value: row.tierOverride ?? "",
-        disabled,
-        "aria-label": "Context tier for " + row.name,
-        onChange: (event: any) => handlers.onTier(row.id, event.target.value === "" ? undefined : event.target.value),
-      },
-      option("", "Inherit (" + (row.tiers.find((tier) => tier.selected)?.value ?? "provider default") + ")"),
-      ...row.tiers.map((tier) => option(tier.value, tierLabel(tier))))));
-  }
-  if (row.manualWindow.editable) {
-    children.push(h("label", { key: "window", className: "ctd-field" },
-      h("span", { className: "ctd-field-label" }, "Context window (tokens)"),
-      h("input", {
-        type: "text",
-        inputMode: "numeric",
-        className: "ctd-input",
-        value: row.manualWindow.value === undefined ? "" : String(row.manualWindow.value),
-        placeholder: "Default " + formatWindow(row.window.tokens),
-        disabled,
-        "aria-label": "Context window for " + row.name,
-        onChange: (event: any) => handlers.onWindow(row.id, event.target.value),
-      })));
-  } else {
-    children.push(h("p", { key: "window-note", className: "ctd-note" },
-      "Window: " + formatWindow(row.window.tokens) + " from " + windowSourceLabel(row.window.source, row.window.tier) + "."));
-  }
-  if (row.fastOffered) {
-    children.push(h("label", { key: "fast", className: "ctd-field" },
-      h("span", { className: "ctd-field-label" }, "Fast mode"),
-      h("select", {
-        className: "ctd-input ctd-select",
-        value: row.fastValue ?? "",
-        disabled,
-        "aria-label": "Fast mode for " + row.name,
-        onChange: (event: any) => handlers.onFast(row.id, event.target.value === "" ? undefined : event.target.value),
-      }, option("", "Inherit (" + row.fastInherited + ")"), option("off", "Off"), option("on", "On"), option("auto", "Provider default"))));
-  }
-  if (row.maxModeOffered) {
-    children.push(h("label", { key: "maxmode", className: "ctd-field" },
-      h("span", { className: "ctd-field-label" }, "Max Mode"),
-      h("select", {
-        className: "ctd-input ctd-select",
-        value: row.maxModeValue ?? "",
-        disabled,
-        "aria-label": "Max Mode for " + row.name,
-        onChange: (event: any) => handlers.onMaxMode(row.id, event.target.value === "" ? undefined : event.target.value),
-      }, option("", "Inherit (" + row.maxModeInherited + ")"), option("off", "Off"), option("on", "On"), option("auto", "Provider default"))));
-  }
-  if (!row.described) {
-    children.push(h("p", { key: "undescribed", className: "ctd-note" }, "The catalog publishes no parameters for this model, so only enablement and the context window are available."));
-  }
-  return h("div", { className: "ctd-model-body" }, ...children);
-}
-
-/** One model row: enablement, the window in effect, and a fold with the per-model settings. */
-export function ModelRowView(props: { row: ModelRow; expanded: boolean; writable: boolean; handlers: PageHandlers }): any {
-  const { row, expanded, writable, handlers } = props;
+/** One model: enablement, then the controls its catalog entry supports, all on one line. */
+export function ModelRowView(props: { row: ModelRow; writable: boolean; handlers: PageHandlers; segmented: Segmented }): any {
+  const { row, writable, handlers, segmented } = props;
   return h("li", { className: "ctd-model" + (row.enabled ? "" : " ctd-model-off") },
     h("div", { className: "ctd-model-head" },
       h("label", { className: "ctd-model-toggle" },
@@ -208,22 +136,55 @@ export function ModelRowView(props: { row: ModelRow; expanded: boolean; writable
           onChange: (event: any) => handlers.onToggleEnabled(row.id, event.target.checked),
         }),
         h("span", { className: "ctd-model-name" }, row.name)),
-      h("span", { className: "ctd-model-id" }, row.id),
-      h("span", { className: "ctd-chip" + (row.window.source === "default" ? " ctd-chip-dim" : "") }, formatWindow(row.window.tokens)),
-      h("span", { className: "ctd-model-source" }, windowSourceLabel(row.window.source, row.window.tier)),
-      h("button", {
-        type: "button",
-        className: "ctd-button",
-        "aria-expanded": expanded,
-        onClick: () => handlers.onExpand(row.id),
-      }, expanded ? "Hide" : "Settings")),
-    expanded ? h(ModelOptions, { row, writable, handlers }) : null);
+      h("span", { className: "ctd-model-id" }, row.id)),
+    h("div", { className: "ctd-model-controls" },
+      row.tierOffered
+        ? h("div", { className: "ctd-control" },
+          h("span", { className: "ctd-control-label" }, "Context"),
+          h(segmented, {
+            id: "ctd-tier-" + row.id,
+            label: "Context tier for " + row.name,
+            value: row.tierValue ?? "",
+            options: tierOptions(row),
+            disabled: !writable,
+            onChange: (next: string) => handlers.onTier(row.id, next === "" ? undefined : next),
+          }))
+        : null,
+      row.fastOffered
+        ? h("div", { className: "ctd-control" },
+          h("span", { className: "ctd-control-label" }, "Fast"),
+          h(segmented, {
+            id: "ctd-fast-" + row.id,
+            label: "Fast mode for " + row.name,
+            value: row.fastValue ?? "",
+            options: FAST_OPTIONS,
+            disabled: !writable,
+            onChange: (next: string) => handlers.onFast(row.id, next === "" ? undefined : next),
+          }))
+        : null,
+      row.manualWindow.editable
+        ? h("label", { className: "ctd-control" },
+          h("span", { className: "ctd-control-label" }, "Window"),
+          h("input", {
+            type: "text",
+            inputMode: "numeric",
+            className: "ctd-input ctd-window-input",
+            value: row.manualWindow.value === undefined ? "" : String(row.manualWindow.value),
+            placeholder: "Default " + formatWindow(row.window.tokens),
+            disabled: !writable,
+            "aria-label": "Context window for " + row.name,
+            onChange: (event: any) => handlers.onWindow(row.id, event.target.value),
+          }))
+        : null,
+      h("span", { className: "ctd-chip" + (row.window.source === "default" ? " ctd-chip-dim" : "") },
+        formatWindow(row.window.tokens) + " · " + windowSourceLabel(row.window.source, row.window.tier)),
+      row.described ? null : h("span", { className: "ctd-note" }, "not described by the catalog")));
 }
 
 /** The whole model list, its loading and unavailable states included. */
-export function ModelsSection(props: { state: PageState; handlers: PageHandlers }): any {
-  const { derived, catalogLoading, catalogError, expanded, writable } = props.state;
-  const { handlers } = props;
+export function ModelsSection(props: { state: PageState; handlers: PageHandlers; segmented: Segmented }): any {
+  const { derived, catalogLoading, catalogError, writable } = props.state;
+  const { handlers, segmented } = props;
   let body: any;
   if (catalogLoading) body = h("p", { className: "ctd-note" }, "Loading the model catalog from Cursor...");
   else if (catalogError !== undefined) body = h("div", { className: "ctd-alert" }, "The model catalog is unavailable right now: " + catalogError);
@@ -231,35 +192,38 @@ export function ModelsSection(props: { state: PageState; handlers: PageHandlers 
   else body = h("ul", { className: "ctd-models" }, ...derived.rows.map((row) => h(ModelRowView, {
     key: row.id,
     row,
-    expanded: expanded === row.id,
     writable,
     handlers,
+    segmented,
   })));
-  return section("Models", derived.rows.length === 0 ? undefined : derived.enabledCount + " of " + derived.rows.length + " enabled; a disabled model leaves the picker but a saved conversation keeps working.", body, h("button", {
-    type: "button",
-    className: "ctd-button",
-    onClick: handlers.onReload,
-    disabled: catalogLoading,
-  }, catalogLoading ? "Loading..." : "Reload catalog"));
+  return section("Models",
+    derived.rows.length === 0 ? undefined : derived.enabledCount + " of " + derived.rows.length + " enabled; changes save as you make them. A disabled model leaves the picker but a saved conversation keeps working.",
+    body,
+    h("button", {
+      type: "button",
+      className: "ctd-button",
+      onClick: handlers.onReload,
+      disabled: catalogLoading,
+    }, catalogLoading ? "Loading..." : "Reload catalog"));
 }
 
 /** Whether a model with no entry of its own appears; the toggle writes on change. */
 export function NewModelsSection(props: { state: PageState; handlers: PageHandlers }): any {
-  const { derived, writable, savingNewModels } = props.state;
-  return section("New models", "Applies to models the catalog lists without an entry of their own, and saves as soon as it is toggled.", h("label", { className: "ctd-check" },
+  const { derived, writable } = props.state;
+  return section("New models", "Applies to models the catalog lists without an entry of their own.", h("label", { className: "ctd-check" },
     h("input", {
       type: "checkbox",
       checked: derived.newModels === "enabled",
-      disabled: !writable || savingNewModels,
+      disabled: !writable,
       "aria-label": "New models appear enabled",
       onChange: (event: any) => props.handlers.onNewModels(event.target.checked),
     }),
     h("span", { className: "ctd-check-label" }, "Models Cursor adds appear enabled")));
 }
 
-/** The page itself, plus its messages and save control. */
-export function PageView(props: { state: PageState; handlers: PageHandlers }): any {
-  const { state, handlers } = props;
+/** The page itself; messages appear only when something failed or a key was stored. */
+export function PageView(props: { state: PageState; handlers: PageHandlers; segmented: Segmented }): any {
+  const { state, handlers, segmented } = props;
   return h("div", { className: "ctd-page", "data-plugin": PACKAGE_NAME },
     h("div", { className: "ctd-head" },
       h("div", null,
@@ -272,20 +236,8 @@ export function PageView(props: { state: PageState; handlers: PageHandlers }): a
           role: state.message.kind === "saved" ? "status" : "alert",
         }, state.message.text)),
     h(KeySection, { state, handlers }),
-    h(ContextSection, { state, handlers }),
-    h(ModelsSection, { state, handlers }),
-    h(NewModelsSection, { state, handlers }),
-    h("div", { className: "ctd-footer" },
-      h("span", { className: "ctd-note" },
-        state.knownContextEnabled
-          ? "Models the provider does not describe fall back to capacities published upstream" + (state.catalogAge === undefined ? "." : " (fetched " + new Date(state.catalogAge).toLocaleString() + ").")
-          : "The published-capacity fallback is off; those models use a manual value or the documented default."),
-      h("button", {
-        type: "button",
-        className: "ctd-button ctd-button-primary",
-        onClick: handlers.onSave,
-        disabled: !state.writable || state.saving || !state.dirty,
-      }, state.saving ? "Saving..." : state.dirty ? "Save" : "No changes")));
+    h(ModelsSection, { state, handlers, segmented }),
+    h(NewModelsSection, { state, handlers }));
 }
 
 /** The one-line summary the plugin row page shows. */

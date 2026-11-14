@@ -6,7 +6,7 @@
  * capacity, so the number the host meters against is the one the provider will apply.
  */
 import { contextTierValue, tierTokens } from "../model-tiers.ts";
-import { contextPreferenceFor, entryFor, maxModeFor } from "./model-config.ts";
+import { acceptedTierFor, contextPreferenceFor, entryFor } from "./model-config.ts";
 import type { ModelPolicy } from "./types.ts";
 
 /** Advertised when nothing describes a model; documented as a default, not a measured capacity. */
@@ -36,7 +36,7 @@ export function resolveContextWindow(args: {
   publishedWindow?: number;
 }): ContextWindowResolution {
   const { modelId, model, accepted, policy, publishedWindow } = args;
-  const tier = contextTierValue(model, accepted, contextPreferenceFor(policy, modelId), maxModeFor(policy, modelId));
+  const tier = contextTierValue(model, acceptedTierFor(policy, modelId, accepted), contextPreferenceFor(policy, modelId));
   const tokens = tier === undefined ? undefined : tierTokens(model, tier);
   if (tier !== undefined && tokens !== undefined) return { tokens, source: "tier", tier };
   if (typeof publishedWindow === "number" && Number.isFinite(publishedWindow) && publishedWindow > 0) {

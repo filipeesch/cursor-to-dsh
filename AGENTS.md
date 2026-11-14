@@ -10,7 +10,7 @@ DeepSeek Harness (DSH) plugin that registers Cursor as the `cursor` LLM provider
 | `src/config.ts` | Config schema (every editable field volatile) and `resolveSettings`, which returns readers over the live configuration |
 | `src/constants.ts` | Provider id, package name, conventional credential reference, catalog route path, default row id |
 | `src/model-catalog.ts` | Catalog shapes, model identity, display names and the fallback model list |
-| `src/model-tiers.ts` | Context tiers, Max Mode variants, tier selection and the rejected-tier step-down |
+| `src/model-tiers.ts` | Context tiers, tier selection and the rejected-tier step-down |
 | `src/model-params.ts` | Catalog parameters -> the params one request carries, and reasoning efforts |
 | `src/policy/types.ts` | Policy types and the documented default policy |
 | `src/policy/model-config.ts` | Per-model entry merge, enablement and the effective per-model modes |
@@ -41,10 +41,11 @@ DeepSeek Harness (DSH) plugin that registers Cursor as the `cursor` LLM provider
 | `src/prompt/render.ts` | Transcript rendering, tool results, system-prompt diffing |
 | `src/prompt/fingerprint.ts` | Message identity and hashing |
 | `src/client/index.ts` | Browser half entry: registers the row's Configure page, fetches the catalog, stores the API key |
-| `src/client/page.ts` | The stateful page: draft, expanded row, save |
+| `src/client/page.ts` | The stateful page: optimistic values, debounced writes, key state |
 | `src/client/views.ts` | Hook-free presentational components |
 | `src/client/derive.ts` | Pure view logic: rows, path operations, formatting |
 | `src/client/controller.ts` | Observable store for the catalog and the key state |
+| `src/client/autosave.ts` | Debounced per-field configuration writes, with failure reporting and a flush on dispose |
 | `src/client/styles.ts` | The page's scoped stylesheet, injected once |
 | `scripts/build-client.mjs` | esbuild build of `src/client` into the module-loader factory bundle |
 | `scripts/smoke-client.mjs` | Loads the built bundle under a stub module loader and checks the row page registers |
@@ -76,8 +77,8 @@ Render the diagram after editing the SVG: `rsvg-convert -w 1400 -h 980 docs/imag
 - Error codes stay outside the host's default retry list; a half-finished Cursor run must not be replayed. A stalled run has its own code (`CURSOR_RUN_STALLED`).
 - Usage buckets are disjoint and `totalTokens` is omitted; the host discards a total that disagrees with the buckets. Report the provider's per-turn values only, never an estimate.
 - Never block a call on the model catalog or on the published-capacity fetch: both are snapshots the request path reads, and refresh happens out of band.
-- The Cursor SDK is pinned for the catalog metadata the plugin reads (`parameters`, `variants[].isMaxMode`); bumping it is a release decision, not a drive-by.
-- A model's context window is what configuration names, then what the provider tier applies, then what the public catalog publishes, then the documented default. The published value is a declared capacity, never a measured one; never enable Cursor Max Mode implicitly.
+- The Cursor SDK is pinned for the catalog metadata the plugin reads (`parameters`, `variants`); bumping it is a release decision, not a drive-by.
+- A model's context window is the tier in effect, then a capacity published upstream, then a manual per-model value, then the documented default. The published value is a declared capacity, never a measured one. Max Mode is legacy (Cursor removed it for usage-based pricing): never send its flag and never filter tiers by it.
 - The policy is read per decision (`settings.readPolicy()`), never captured at `apply` time, so a save applies without remounting the plugin. Every field the page edits is volatile; ordinary fields are invisible to settings.
 - The shipped modules under `src/policy`, `src/model-tiers.ts`, `src/model-catalog.ts`, `src/catalog-payload.ts` and `src/constants.ts` are imported by both halves: keep them dependency-free (no node builtins, no SDK).
 - The catalog route is the plugin's only HTTP surface. It applies `connection.requestRejection` before answering, answers read-only JSON, and carries no credential material; without a web carrier it is never registered.
