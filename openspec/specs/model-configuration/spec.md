@@ -109,7 +109,7 @@ The plugin SHALL prepare a call from the last known catalog without waiting for 
 
 ### Requirement: The advertised context window follows the source that describes the model
 
-The plugin SHALL advertise the context window that the provider will actually apply, including a tier the provider accepted after rejecting an earlier one. The plugin SHALL resolve the advertised window in this order: the context tier in effect for that model, then the capacity published upstream for that model, then a manual per-model value (the model's own entry, then the wildcard entry for unlisted models), then a documented default. The plugin SHALL NOT let a manual value override a provider tier or a published capacity. When no source describes the model, the plugin SHALL advertise the documented default and SHALL document that it is a default rather than a measured capacity.
+The plugin SHALL advertise the context window that the provider will actually apply, including a tier the provider accepted after rejecting an earlier one. The plugin SHALL resolve the advertised window in this order: the context tier in effect for that model, then the capacity published upstream for that model, then a manual per-model value (the model's own entry, then the wildcard entry for unlisted models), then the capacity the provider documents for that model, then a documented default. The plugin SHALL NOT let a manual value override a provider tier or a published capacity, and SHALL NOT let the provider-documented capacity override a manual value. When no source describes the model, the plugin SHALL advertise the documented default and SHALL document that it is a default rather than a measured capacity.
 
 #### Scenario: The provider rejected a larger tier
 
@@ -133,6 +133,12 @@ The plugin SHALL advertise the context window that the provider will actually ap
 - **WHEN** the model publishes no context tier and no published capacity applies, and the configuration names a token count for that model
 - **THEN** the model advertises the configured count
 
+#### Scenario: The provider documents a capacity without publishing it
+
+- **WHEN** the model publishes no context tier, no published capacity applies and the configuration names no value, and the provider's own documentation states a window for that model
+- **THEN** the model advertises the documented capacity instead of the documented default
+- **AND** a manual value still overrides it
+
 #### Scenario: A wildcard covers the remaining unlisted models
 
 - **WHEN** neither a tier nor a published capacity applies and the configuration sets a wildcard entry
@@ -140,7 +146,7 @@ The plugin SHALL advertise the context window that the provider will actually ap
 
 #### Scenario: Nothing describes the model
 
-- **WHEN** no tier, published capacity or manual value applies
+- **WHEN** no tier, published capacity, manual value or provider-documented capacity applies
 - **THEN** the plugin advertises its documented default
 - **AND** the documentation states that this value is a default, not a capacity reported by the provider
 
