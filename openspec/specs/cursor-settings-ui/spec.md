@@ -66,7 +66,7 @@ The page SHALL offer a single masked API key field with reveal and save controls
 
 ### Requirement: The model table is driven by the live catalog
 
-The page SHALL list every model the provider advertises on one line per model, with its display name and the controls that model's own catalog entry supports, rendered as inline segmented controls: a context selector only when the entry publishes context tiers, and a Fast control only when it publishes that parameter. The page SHALL NOT require opening a model to reach those controls. For a model the catalog does not describe, the page SHALL offer enablement and a context window only, and SHALL mark the model as not described by the catalog. When the catalog cannot be read, the page SHALL state that the list is unavailable instead of presenting cached content as current.
+The page SHALL list every model the provider advertises on one line per model, ordered alphabetically by display name, with its display name and the controls that model's own catalog entry supports, rendered as inline segmented controls: a context selector only when the entry publishes context tiers, and a Fast control only when it publishes that parameter. The page SHALL NOT require opening a model to reach those controls. For a model the catalog does not describe, the page SHALL offer enablement and a context window only, and SHALL mark the model as not described by the catalog. When the catalog cannot be read, the page SHALL state that the list is unavailable instead of presenting cached content as current.
 
 #### Scenario: A model publishes tiers
 
@@ -78,6 +78,12 @@ The page SHALL list every model the provider advertises on one line per model, w
 
 - **WHEN** a model's catalog entry publishes no Fast parameter
 - **THEN** the page offers no Fast control for that model
+
+#### Scenario: The list is ordered
+
+- **WHEN** the catalog lists several models
+- **THEN** the page lists them alphabetically by display name
+- **AND** a model added later sorts into place without a code change
 
 #### Scenario: The catalog does not describe the model
 
