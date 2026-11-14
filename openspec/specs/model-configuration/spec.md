@@ -5,40 +5,9 @@ Defines how the plugin resolves the model parameters it sends to the provider an
 
 ## Requirements
 
-### Requirement: The advertised context window is the effective one
-
-The plugin SHALL advertise the context window that the provider will actually apply, including a tier the provider accepted after rejecting an earlier one. When configuration supplies a value, the plugin SHALL advertise the most specific configured value that applies, in this order: an entry for that model, a wildcard entry for unlisted models, then a global configured value. When the provider publishes no tier for a model and no configured value applies, the plugin SHALL advertise a documented default and SHALL document that it is a default rather than a measured capacity.
-
-#### Scenario: The provider rejected a larger tier
-
-- **WHEN** a request was rejected for an unsupported context tier and the plugin retried with a smaller tier that succeeded
-- **THEN** every later advertisement of that model's context window reports the accepted tier
-
-#### Scenario: The window is configured explicitly
-
-- **WHEN** the configuration sets a global context window to an explicit token count
-- **THEN** the plugin advertises that count for every model without a more specific entry
-
-#### Scenario: A model has its own window
-
-- **WHEN** the configuration names a token count for a specific model
-- **THEN** that model advertises the configured count
-- **AND** the model's provider tier no longer decides the advertised value
-
-#### Scenario: A wildcard covers the models the provider does not describe
-
-- **WHEN** the provider publishes no context tier for a model and the configuration sets a wildcard entry
-- **THEN** the model advertises the wildcard count instead of the default
-
-#### Scenario: Nothing describes the model
-
-- **WHEN** the provider publishes no context tier for a model and no configured value applies
-- **THEN** the plugin advertises its documented default
-- **AND** the documentation states that this value is a default, not a capacity reported by the provider
-
 ### Requirement: The requested context tier is configurable and defaults to the largest offered
 
-The plugin SHALL request the largest context tier the model offers that the Max Mode policy allows by default. A configuration value SHALL select a specific tier. When the provider rejects the selected tier, the plugin SHALL retry with the next smaller offered tier and remember the accepted tier for that model across process restarts.
+The plugin SHALL request the largest context tier the model offers that the Max Mode policy allows by default. A global preference SHALL select the largest or the smallest allowed tier. A per-model value SHALL select a specific tier for that model and SHALL take precedence over the global preference. When the provider rejects the selected tier, the plugin SHALL retry with the next smaller offered tier and remember the accepted tier for that model across process restarts.
 
 #### Scenario: Default configuration
 
@@ -53,12 +22,17 @@ The plugin SHALL request the largest context tier the model offers that the Max 
 
 #### Scenario: A specific tier is configured
 
-- **WHEN** the configuration names an offered tier
-- **THEN** that tier is requested instead of the default
+- **WHEN** the configuration names one offered tier for a model
+- **THEN** that tier is requested for that model instead of the global preference
+
+#### Scenario: A global preference selects the smallest tier
+
+- **WHEN** the global preference selects the smallest allowed tier and the model offers several tiers
+- **THEN** the smallest tier that the Max Mode policy allows is requested
 
 ### Requirement: Fast mode is configurable and off by default
 
-The plugin SHALL expose a configuration option selecting the provider's priority-latency mode, with three states: off, on, and provider default. The default state SHALL be off. When the selected model offers no such control, the request SHALL proceed unchanged instead of failing.
+The plugin SHALL expose a configuration option selecting the provider's priority-latency mode, with three states: off, on, and provider default. The default state SHALL be off. A per-model value SHALL override the global policy for that model. When the selected model offers no such control, the request SHALL proceed unchanged instead of failing.
 
 #### Scenario: Default configuration
 
@@ -69,6 +43,11 @@ The plugin SHALL expose a configuration option selecting the provider's priority
 
 - **WHEN** Fast mode is configured as on and the model offers the control
 - **THEN** the request enables it
+
+#### Scenario: A per-model value overrides the global policy
+
+- **WHEN** the global policy is off and the model's own entry enables Fast mode
+- **THEN** the request enables it for that model
 
 #### Scenario: The model has no such control
 
@@ -130,7 +109,7 @@ The plugin SHALL prepare a call from the last known catalog without waiting for 
 
 ### Requirement: Max mode is explicit and never implied
 
-The plugin SHALL expose a Max Mode policy with three states: off, on, and provider-derived. The default SHALL be off. While the policy is off, the plugin SHALL NOT request a tier that the provider marks as requiring Max Mode, and SHALL NOT send a Max Mode flag. While the policy is on, the plugin SHALL request the largest offered tier and SHALL send the Max Mode flag. While the policy is provider-derived, the provider's own catalog SHALL decide whether the selected tier runs in Max Mode.
+The plugin SHALL expose a Max Mode policy with three states: off, on, and provider-derived. The default SHALL be off. A per-model value SHALL override the global policy for that model. While the policy in effect for a model is off, the plugin SHALL NOT request a tier that the provider marks as requiring Max Mode, and SHALL NOT send a Max Mode flag. While it is on, the plugin SHALL request the largest offered tier and SHALL send the Max Mode flag. While it is provider-derived, the provider's own catalog SHALL decide whether the selected tier runs in Max Mode.
 
 #### Scenario: Default configuration
 
@@ -148,7 +127,95 @@ The plugin SHALL expose a Max Mode policy with three states: off, on, and provid
 - **WHEN** the policy is provider-derived and the requested tier requires Max Mode
 - **THEN** the provider's catalog decides whether the request runs in Max Mode
 
+#### Scenario: A per-model value overrides the global policy
+
+- **WHEN** the global policy is off and a model's own entry enables Max Mode
+- **THEN** that model may request a tier that requires Max Mode
+
 #### Scenario: The model publishes no Max Mode information
 
 - **WHEN** the model's catalog entry carries no Max Mode marking
 - **THEN** the policy does not change the request and no error is raised
+
+### Requirement: The advertised context window follows the source that describes the model
+
+The plugin SHALL advertise the context window that the provider will actually apply, including a tier the provider accepted after rejecting an earlier one. The plugin SHALL resolve the advertised window in this order: the context tier in effect for that model, then the capacity published upstream for that model, then a manual per-model value (the model's own entry, then the wildcard entry for unlisted models), then a documented default. The plugin SHALL NOT let a manual value override a provider tier or a published capacity. When no source describes the model, the plugin SHALL advertise the documented default and SHALL document that it is a default rather than a measured capacity.
+
+#### Scenario: The provider rejected a larger tier
+
+- **WHEN** a request was rejected for an unsupported context tier and the plugin retried with a smaller tier that succeeded
+- **THEN** every later advertisement of that model's context window reports the accepted tier
+
+#### Scenario: The model publishes a tier
+
+- **WHEN** the model publishes context tiers and a manual per-model value is also configured
+- **THEN** the plugin advertises the tokens of the tier in effect
+- **AND** the manual value does not change the advertised window
+
+#### Scenario: Published capacity covers a model without a tier
+
+- **WHEN** the model publishes no context tier and the upstream catalog publishes a capacity for it
+- **THEN** the plugin advertises that published capacity
+- **AND** no manual value is required
+
+#### Scenario: A manual value covers a model nothing describes
+
+- **WHEN** the model publishes no context tier and no published capacity applies, and the configuration names a token count for that model
+- **THEN** the model advertises the configured count
+
+#### Scenario: A wildcard covers the remaining unlisted models
+
+- **WHEN** neither a tier nor a published capacity applies and the configuration sets a wildcard entry
+- **THEN** the model advertises the wildcard count instead of the default
+
+#### Scenario: Nothing describes the model
+
+- **WHEN** no tier, published capacity or manual value applies
+- **THEN** the plugin advertises its documented default
+- **AND** the documentation states that this value is a default, not a capacity reported by the provider
+
+### Requirement: Disabled models leave the advertised catalog
+
+The plugin SHALL advertise only the models that are enabled, where a model with no entry of its own follows the configured default for new models. The plugin SHALL continue to resolve a model that is not advertised, so a saved selection or a recorded conversation naming it keeps working. The plugin SHALL preserve configuration entries for models the provider no longer lists.
+
+#### Scenario: A model is disabled
+
+- **WHEN** the configuration disables a model the provider offers
+- **THEN** the plugin does not advertise it
+- **AND** a request naming that model still resolves the route
+
+#### Scenario: A new model follows the default
+
+- **WHEN** the provider offers a model with no configuration entry and the new-model default is enabled
+- **THEN** the plugin advertises it
+
+#### Scenario: A new model is disabled by default
+
+- **WHEN** the provider offers a model with no configuration entry and the new-model default is disabled
+- **THEN** the plugin does not advertise it
+- **AND** enabling it explicitly makes it advertised
+
+#### Scenario: The provider drops a model
+
+- **WHEN** the catalog no longer lists a model that has a configuration entry
+- **THEN** the entry stays stored and no error is raised
+
+### Requirement: A published capacity is a fallback the request path never waits for
+
+When the provider publishes no context tier for a model, the plugin SHALL fall back to a capacity published in a public upstream model catalog, refreshed out of band and persisted across restarts. User-facing surfaces SHALL identify that value as a published capacity rather than a capacity measured from the provider. When candidates disagree for the same model, the plugin SHALL prefer the model's own vendor and SHALL NOT advertise more than the smallest candidate declares. A configuration value SHALL disable the upstream fetch; while it is disabled the plugin SHALL use only manual values and the documented default. The plugin SHALL NOT wait for the upstream catalog on any request path and SHALL continue without it when the fetch fails.
+
+#### Scenario: The upstream catalog describes the model
+
+- **WHEN** the provider publishes no tier for a model and the upstream catalog publishes a capacity for it
+- **THEN** the plugin advertises that capacity and identifies it as published upstream
+
+#### Scenario: The upstream catalog is unavailable
+
+- **WHEN** the fetch fails, times out or is disabled
+- **THEN** the plugin advertises manual values and the documented default
+- **AND** no request path waits for the fetch
+
+#### Scenario: Candidates disagree
+
+- **WHEN** the upstream catalog publishes different capacities for the same model id across providers
+- **THEN** the plugin prefers the model's own vendor and never advertises more than the smallest candidate
