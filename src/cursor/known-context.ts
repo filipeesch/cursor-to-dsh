@@ -15,9 +15,15 @@ const DEFAULT_FRESH_MS = 24 * 60 * 60_000;
 const DEFAULT_TIMEOUT_MS = 20_000;
 const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 
+/**
+ * The projection's own version, so a snapshot written under another rule is discarded instead of
+ * trusted for a day. Bump it whenever `projectWindows` changes what it would produce.
+ */
+export const SNAPSHOT_VERSION = 2;
+
 /** The persisted projection: published capacities keyed by provider model id. */
 export interface KnownContextSnapshot {
-  version: 1;
+  version: typeof SNAPSHOT_VERSION;
   fetchedAt: number;
   windows: Record<string, number>;
 }
@@ -95,23 +101,37 @@ export function publishedEntries(document: unknown): PublishedModel[] {
   return out;
 }
 
-/** Whether one published entry belongs to the model's own vendor. */
+/**
+ * Whether one published entry belongs to the model's own vendor. Only the provider identity counts:
+ * an id path that merely carries the vendor name ("deepseek-ai/...") is a third party's namespace,
+ * and its reduced-window variant must not speak for the vendor.
+ */
 function ownVendor(entry: PublishedModel, vendor: string): boolean {
-  if (normalizeModelKey(entry.provider).includes(vendor)) return true;
-  return entry.id
-    .toLowerCase()
-    .split("/")
-    .slice(0, -1)
-    .some((segment) => normalizeModelKey(segment).includes(vendor));
+  return normalizeModelKey(entry.provider).includes(vendor);
+}
+
+/** The capacity most candidates declare, preferring the larger one on a tie. */
+export function mostDeclared(values: readonly number[]): number | undefined {
+  const counts = new Map<number, number>();
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+  let best: number | undefined;
+  let bestCount = 0;
+  for (const [value, count] of counts) {
+    if (count > bestCount || (count === bestCount && (best === undefined || value > best))) {
+      best = value;
+      bestCount = count;
+    }
+  }
+  return best;
 }
 
 /**
  * Project the published catalog onto the ids the provider lists.
  *
  * A candidate matches when its own id segment or display name equals the provider id, ignoring
- * case and punctuation. When candidates disagree, the model's own vendor wins; among the
- * remaining candidates the smallest capacity wins, so the plugin never advertises more context
- * than an upstream source declares.
+ * case and punctuation. When candidates disagree, entries published by the model's own vendor
+ * provider win; the value is then the capacity most candidates declare, so a single gateway's
+ * reduced variant does not become the model's window.
  * @param ids - model ids the provider currently lists.
  * @param entries - published catalog entries.
  * @returns capacity in tokens per provider model id.
@@ -127,9 +147,8 @@ export function projectWindows(ids: readonly string[], entries: readonly Publish
     const vendor = vendorOf(id);
     const preferred = vendor === undefined ? [] : matches.filter((entry) => ownVendor(entry, vendor));
     const pool = preferred.length ? preferred : matches;
-    let smallest = Number.POSITIVE_INFINITY;
-    for (const entry of pool) smallest = Math.min(smallest, entry.context ?? Number.POSITIVE_INFINITY);
-    if (Number.isFinite(smallest)) windows[id] = smallest;
+    const value = mostDeclared(pool.map((entry) => entry.context as number));
+    if (value !== undefined) windows[id] = value;
   }
   return windows;
 }
@@ -172,12 +191,12 @@ export class KnownContext {
 
   /** Adopt a persisted snapshot; malformed input is ignored. */
   load(snapshot: KnownContextSnapshot | undefined): void {
-    if (!snapshot || snapshot.version !== 1 || !snapshot.windows || typeof snapshot.windows !== "object") return;
+    if (!snapshot || snapshot.version !== SNAPSHOT_VERSION || !snapshot.windows || typeof snapshot.windows !== "object") return;
     const windows: Record<string, number> = {};
     for (const [id, tokens] of Object.entries(snapshot.windows)) {
       if (typeof tokens === "number" && Number.isFinite(tokens) && tokens > 0) windows[id] = Math.round(tokens);
     }
-    this.snapshot = { version: 1, fetchedAt: Number(snapshot.fetchedAt) || 0, windows };
+    this.snapshot = { version: SNAPSHOT_VERSION, fetchedAt: Number(snapshot.fetchedAt) || 0, windows };
   }
 
   /** Published capacity for one model id, when the snapshot describes it. */
@@ -226,7 +245,7 @@ export class KnownContext {
   private async run(): Promise<void> {
     const ids = this.deps.modelIds();
     const document = await (this.deps.fetchCatalog ?? fetchPublishedCatalog)();
-    const snapshot: KnownContextSnapshot = { version: 1, fetchedAt: this.now(), windows: projectWindows(ids, publishedEntries(document)) };
+    const snapshot: KnownContextSnapshot = { version: SNAPSHOT_VERSION, fetchedAt: this.now(), windows: projectWindows(ids, publishedEntries(document)) };
     this.snapshot = snapshot;
     this.deps.persist?.(snapshot);
   }

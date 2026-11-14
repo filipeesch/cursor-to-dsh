@@ -64,7 +64,7 @@ test("only entries that publish a capacity are read, and a malformed document re
   assert.deepEqual(publishedEntries({ p: { models: { a: { limit: { context: -1 } } } } }), []);
 });
 
-test("the projection prefers the model's own vendor and never advertises more than the smallest candidate", () => {
+test("the projection prefers the model's own vendor over third-party reduced variants", () => {
   const windows = projectWindows(["claude-opus-5-5", "gpt-5.5", "gemini-4-carbon", "deepseek-v41-flash-1017"], publishedEntries(catalogue));
   assert.equal(windows["claude-opus-5-5"], 1_000_000);
   assert.equal(windows["gpt-5.5"], 1_050_000, "the vendor's own entry wins over a gateway's smaller one");
@@ -77,12 +77,29 @@ test("a model id is never matched by another model's suffix", () => {
   assert.deepEqual(windows, {}, "the @default variant does not describe the auto entry");
 });
 
-test("with no vendor match the smallest candidate is used", () => {
+test("with no vendor match the capacity most candidates declare is used", () => {
   const entries = [
     { provider: "a-gateway", id: "vendor/kimi-k3", name: "Kimi K3", context: 1_048_576 },
     { provider: "b-gateway", id: "vendor/kimi-k3", name: "Kimi K3", context: 262_144 },
+    { provider: "c-gateway", id: "vendor/kimi-k3", name: "Kimi K3", context: 1_048_576 },
   ];
-  assert.deepEqual(projectWindows(["kimi-k3"], entries), { "kimi-k3": 262_144 });
+  assert.deepEqual(projectWindows(["kimi-k3"], entries), { "kimi-k3": 1_048_576 }, "a lone gateway limit does not become the window");
+});
+
+test("a third party whose id path carries the vendor name does not speak for the vendor", () => {
+  const entries = [
+    { provider: "deepseek", id: "deepseek-flash", name: "DeepSeek V4.1 Flash 1017", context: 1_048_576 },
+    { provider: "thinkingmachines", id: "deepseek-ai/DeepSeek-V4.1-Flash-1017:peft:262144", name: "DeepSeek V4.1 Flash 1017", context: 262_144 },
+  ];
+  assert.deepEqual(projectWindows(["deepseek-v41-flash-1017"], entries), { "deepseek-v41-flash-1017": 1_048_576 });
+});
+
+test("a tie between the most-declared capacities takes the larger", () => {
+  const entries = [
+    { provider: "g1", id: "vendor/kimi-k3", name: "Kimi K3", context: 262_144 },
+    { provider: "g2", id: "vendor/kimi-k3", name: "Kimi K3", context: 1_048_576 },
+  ];
+  assert.deepEqual(projectWindows(["kimi-k3"], entries), { "kimi-k3": 1_048_576 });
 });
 
 test("the snapshot answers without a fetch, refreshes out of band and persists", async () => {
@@ -149,15 +166,15 @@ test("the snapshot round-trips through a gzip file and rejects a malformed docum
   const dir = mkdtempSync(join(tmpdir(), "cursor-to-dsh-known-"));
   try {
     const file = join(dir, "known.json.gz");
-    writeGzipJsonFile(file, { version: 1, fetchedAt: 42, windows: { m: 262_144 } });
-    assert.deepEqual(readGzipJsonFile(file), { version: 1, fetchedAt: 42, windows: { m: 262_144 } });
+    writeGzipJsonFile(file, { version: 2, fetchedAt: 42, windows: { m: 262_144 } });
+    assert.deepEqual(readGzipJsonFile(file), { version: 2, fetchedAt: 42, windows: { m: 262_144 } });
 
     const known = new KnownContext({ modelIds: () => [], enabled: () => true });
     known.load(readGzipJsonFile(file));
     assert.equal(known.windowFor("m"), 262_144);
-    known.load({ version: 2, fetchedAt: 1, windows: { m: 1 } } as any);
-    assert.equal(known.windowFor("m"), 262_144, "an unknown version is ignored");
-    known.load({ version: 1, fetchedAt: 1, windows: { m: -1, n: "x" } } as any);
+    known.load({ version: 1, fetchedAt: 1, windows: { m: 1 } } as any);
+    assert.equal(known.windowFor("m"), 262_144, "a snapshot written under the old rule is ignored");
+    known.load({ version: 2, fetchedAt: 1, windows: { m: -1, n: "x" } } as any);
     assert.equal(known.windowFor("m"), undefined, "a usable document replaces the snapshot; unusable values are dropped");
     assert.equal(known.windowFor("n"), undefined);
   } finally {

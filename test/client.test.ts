@@ -136,6 +136,7 @@ test("derivation follows the catalog: tiers, published capacity and the manual l
   const kimi = row("kimi", derived);
   assert.equal(kimi.window.source, "default");
   assert.equal(kimi.manualWindow.editable, true);
+  assert.equal(kimi.manualWindow.value, 200_000, "the field shows the window in effect, not an empty box");
   assert.equal(kimi.tierOffered, false);
   assert.equal(kimi.fastOffered, false);
 
