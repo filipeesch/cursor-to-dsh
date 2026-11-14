@@ -13,14 +13,11 @@
  */
 import { debug } from "../debug.ts";
 import type { ContextTierStore } from "../cursor/context-tier.ts";
-import {
-  isRejectedParams,
-  modelParams,
-  resolveModelId,
-  smallerContext,
-  type ModelPolicy,
-  type Param,
-} from "../models.ts";
+import { isRejectedParams, smallerContext } from "../model-tiers.ts";
+import { modelParams } from "../model-params.ts";
+import { resolveModelId, type Param } from "../model-catalog.ts";
+import { maxModeFor } from "../policy/model-config.ts";
+import type { ModelPolicy } from "../policy/types.ts";
 import { currentTurnImages, imagesOf, textOf } from "../prompt/content.ts";
 import { fingerprint, hash } from "../prompt/fingerprint.ts";
 import { renderTranscript, systemPromptAddition, toolResultForCursor } from "../prompt/render.ts";
@@ -51,7 +48,8 @@ export interface TurnServices {
   createAgent: (opts: any) => Promise<any>;
   registry: SessionRegistry;
   tiers: ContextTierStore;
-  policy: ModelPolicy;
+  /** Reads the policy from the configuration as it currently stands. */
+  readPolicy: () => ModelPolicy;
   /** Inactivity window for one run; 0 disables it. */
   stallTimeoutMs: number;
   onStall?: (session: CursorSession, info: StallInfo) => void;
@@ -89,6 +87,7 @@ async function openSession(
   key: string,
   modelId: string,
   params: Param[] | undefined,
+  maxMode: boolean,
   t: Transcript,
   apiKey: string,
   cwd: string,
@@ -107,7 +106,7 @@ async function openSession(
       id: modelId,
       ...(params?.length ? { params } : {}),
       // Only an explicit policy turns on the provider's extended-context mode.
-      ...(services.policy.maxMode === "on" ? { maxMode: true } : {}),
+      ...(maxMode ? { maxMode: true } : {}),
     },
     apiKey,
     // Always "mcp": host tools are MCP custom tools, and tools can be added later.
@@ -161,14 +160,15 @@ function settle(fn: () => void): void {
 export async function runTurn(options: TurnOptions, services: TurnServices): Promise<void> {
   const { model, apiKey, sessionKey, cwd, reply, signal } = options;
   const t = options.transcript;
-  const { registry, tiers, policy } = services;
+  const { registry, tiers } = services;
+  const policy = services.readPolicy();
   const modelId = resolveModelId(model.id);
   if (!apiKey) {
     return reply.finish("error", "No Cursor API key. Store CURSOR_API_KEY in DSH credentials or export it before launching DSH.", ERROR_CODES.missingKey);
   }
 
   const accepted = tiers.get(modelId);
-  const params = modelParams(model, options.reasoning, policy, accepted);
+  const params = modelParams(model, options.reasoning, policy, accepted, modelId);
   const signature = signatureOf(modelId, params);
 
   const send = async (s: CursorSession, text: string, images: any[] | undefined, sendOptions: any) =>
@@ -200,7 +200,7 @@ export async function runTurn(options: TurnOptions, services: TurnServices): Pro
   try {
     if (!s || plan.kind === "fresh") {
       const started = Date.now();
-      s = await openSession(sessionKey, modelId, params, t, apiKey, cwd, services);
+      s = await openSession(sessionKey, modelId, params, maxModeFor(policy, modelId) === "on", t, apiKey, cwd, services);
       const created = Date.now();
       s.busy = true;
       await sendFirst(s);
@@ -219,7 +219,7 @@ export async function runTurn(options: TurnOptions, services: TurnServices): Pro
         s.systemPrompt = t.systemPrompt;
       } else {
         registry.drop(s);
-        s = await openSession(sessionKey, modelId, params, t, apiKey, cwd, services);
+        s = await openSession(sessionKey, modelId, params, maxModeFor(policy, modelId) === "on", t, apiKey, cwd, services);
         s.busy = true;
         await sendFirst(s);
         freshRun = true;
@@ -312,7 +312,7 @@ export async function runTurn(options: TurnOptions, services: TurnServices): Pro
         const next = lower.find((p) => p.id === "context");
         if (next) tiers.set(modelId, next.value);
         registry.drop(s);
-        s = await openSession(sessionKey, modelId, lower, t, apiKey, cwd, services);
+        s = await openSession(sessionKey, modelId, lower, maxModeFor(policy, modelId) === "on", t, apiKey, cwd, services);
         s.busy = true;
         await sendFirst(s);
         s.seen = t.messages.map(fingerprint);

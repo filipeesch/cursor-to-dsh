@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { CursorAdapter } from "../src/adapter.ts";
 import { ModelCatalog } from "../src/cursor/catalog.ts";
 import { ContextTierStore } from "../src/cursor/context-tier.ts";
-import { DEFAULT_POLICY, FALLBACK_MODELS, type ModelPolicy } from "../src/models.ts";
+import { DEFAULT_POLICY, type ModelPolicy } from "../src/policy/types.ts";
+import { FALLBACK_MODELS } from "../src/model-catalog.ts";
 import { SessionRegistry } from "../src/session/registry.ts";
 
 /** Scripted fake Cursor agent. Each send runs `script(ctx)` as the model. */
@@ -134,6 +135,7 @@ function adapterFor(cursor: { createAgent: any }, deps: any = {}) {
     tiers: deps.tiers ?? new ContextTierStore(),
     registry: deps.registry ?? new SessionRegistry(),
     policy: (deps.policy ?? DEFAULT_POLICY) as ModelPolicy,
+    publishedWindow: deps.publishedWindow,
     stallTimeoutMs: deps.stallTimeoutMs ?? 0,
     onStall: deps.onStall,
   };
@@ -145,7 +147,8 @@ function adapterFor(cursor: { createAgent: any }, deps: any = {}) {
     catalog: env.catalog,
     tiers: env.tiers,
     registry: env.registry,
-    policy: env.policy,
+    readPolicy: () => env.policy,
+    publishedWindow: (modelId: string) => env.publishedWindow?.(modelId),
     stallTimeoutMs: env.stallTimeoutMs,
     onStall: env.onStall,
   });
@@ -573,8 +576,9 @@ test("models: the advertised window is the accepted tier, with an explicit overr
   const stepped = adapterFor(fakeCursor(async function* () {}), { tiers: new ContextTierStore({ claude: "300k" }) });
   assert.equal((await stepped.resolveModel("cursor", "claude")).context.contextWindow, 300_000);
 
-  const overridden = adapterFor(fakeCursor(async function* () {}), { policy: { ...DEFAULT_POLICY, contextWindow: 400_000 } });
-  assert.equal((await overridden.resolveModel("cursor", "claude")).context.contextWindow, 400_000);
+  const manual = adapterFor(fakeCursor(async function* () {}), { policy: { ...DEFAULT_POLICY, models: { "*": { contextWindow: 400_000 } } } });
+  assert.equal((await manual.resolveModel("cursor", "claude")).context.contextWindow, 1_000_000, "a manual value never beats the provider tier");
+  assert.equal((await manual.resolveModel("cursor", "m")).context.contextWindow, 400_000, "a model nothing describes takes the manual value");
 
   const duplicated = [...catalogModels, { id: "auto-smart", displayName: "Auto" }, { id: "default", displayName: "Auto" }];
   const autosCatalog = new ModelCatalog({ listModels: async () => duplicated, resolveApiKey: async () => "k" });
@@ -608,13 +612,59 @@ test("Max Mode reaches agent creation only when the policy asks for it", async (
   assert.equal(onCursor.created[0].model.maxMode, true, "on sends the flag");
 });
 
-test("models: a per-model window overrides what the host is told", async () => {
+test("models: the published capacity fills a model the tier does not describe", async () => {
   const adapter = adapterFor(fakeCursor(async function* () {}), {
-    policy: { ...DEFAULT_POLICY, contextWindows: { "*": 1_000_000, "deepseek-v41-flash-1017": 500_000 } },
+    publishedWindow: (modelId: string) => (modelId === "m" ? 1_048_576 : undefined),
   });
-  assert.equal((await adapter.resolveModel("cursor", "deepseek-v41-flash-1017")).context.contextWindow, 500_000);
-  assert.equal((await adapter.resolveModel("cursor", "unlisted")).context.contextWindow, 1_000_000);
-  assert.equal((await adapter.resolveModel("cursor", "m")).context.contextWindow, 1_000_000, "the wildcard covers models without their own entry");
+  assert.equal((await adapter.resolveModel("cursor", "m")).context.contextWindow, 1_048_576);
+  assert.equal((await adapter.resolveModel("cursor", "claude")).context.contextWindow, 1_000_000, "the provider tier still wins");
+
+  const manual = adapterFor(fakeCursor(async function* () {}), {
+    publishedWindow: (modelId: string) => (modelId === "m" ? 1_048_576 : undefined),
+    policy: { ...DEFAULT_POLICY, models: { m: { contextWindow: 500_000 } } },
+  });
+  assert.equal((await manual.resolveModel("cursor", "m")).context.contextWindow, 1_048_576, "a published capacity beats a manual value");
+});
+
+test("models: a disabled model leaves the advertised catalog but still resolves", async () => {
+  const adapter = adapterFor(fakeCursor(async function* () {}), {
+    policy: { ...DEFAULT_POLICY, models: { claude: { enabled: false } } },
+  });
+  assert.deepEqual((await adapter.listModels("cursor")).map((m: any) => m.id), ["m"]);
+  assert.equal((await adapter.resolveModel("cursor", "claude")).name, "Claude", "a saved selection keeps resolving");
+
+  const disabledByDefault = adapterFor(fakeCursor(async function* () {}), {
+    policy: { ...DEFAULT_POLICY, newModels: "disabled", models: { m: { enabled: true } } },
+  });
+  assert.deepEqual((await disabledByDefault.listModels("cursor")).map((m: any) => m.id), ["m"]);
+});
+
+test("models: the policy is read per call, so a saved setting applies without a remount", async () => {
+  const adapter = adapterFor(fakeCursor(async function* () {}));
+  assert.equal((await adapter.resolveModel("cursor", "m")).context.contextWindow, 200_000);
+  env.policy = { ...DEFAULT_POLICY, models: { m: { contextWindow: 262_144 }, claude: { enabled: false } } };
+  assert.equal((await adapter.resolveModel("cursor", "m")).context.contextWindow, 262_144);
+  assert.deepEqual((await adapter.listModels("cursor")).map((model: any) => model.id), ["m"]);
+});
+
+test("models: a per-model Max Mode policy reaches agent creation", async () => {
+  const cursor = fakeCursor(async function* (ctx: any) {
+    ctx.say("ok");
+  });
+  await call(adapterFor(cursor, {
+    catalog: (() => {
+      const models = [{ id: "m", parameters: [{ id: "context", values: [{ value: "300k" }, { value: "1m" }] }], variants: [
+        { params: [{ id: "context", value: "300k" }] },
+        { params: [{ id: "context", value: "1m" }], isMaxMode: true },
+      ] }];
+      const catalog = new ModelCatalog({ listModels: async () => models, resolveApiKey: async () => "k" });
+      catalog.load({ models, live: true, fetchedAt: Date.now() });
+      return catalog;
+    })(),
+    policy: { ...DEFAULT_POLICY, models: { m: { maxMode: "on" } } },
+  }), [user("hi")]);
+  assert.equal(cursor.created[0].model.maxMode, true);
+  assert.deepEqual(cursor.created[0].model.params.filter((p: any) => p.id === "context"), [{ id: "context", value: "1m" }]);
 });
 
 test("auxiliary calls (session titles) get their own agent and leave the session alone", async () => {

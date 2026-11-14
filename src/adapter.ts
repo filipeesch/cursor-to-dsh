@@ -2,28 +2,26 @@
  * The host `LlmAdapter` for the `cursor` route.
  *
  * `stream()` converts the request, runs one call on the session's Cursor agent and yields its
- * chunks. The model catalog is a snapshot the request path reads without blocking; the metadata
- * reported for a model is the same configuration the request will carry.
+ * chunks. The model catalog is a snapshot the request path reads without blocking, and the policy
+ * is read from the live configuration on every decision, so a saved setting applies to the next
+ * call without remounting the plugin.
  */
 import { LlmAdapter, LlmError } from "@deepseek-ai/dsh-llm";
 
+import { PROVIDER_ID } from "./constants.ts";
 import type { ModelCatalog } from "./cursor/catalog.ts";
 import type { ContextTierStore } from "./cursor/context-tier.ts";
-import {
-  advertisedContextWindow,
-  modelNames,
-  PROVIDER_ID,
-  reasoningInfo,
-  resolveModelId,
-  type CatalogModel,
-  type ModelPolicy,
-} from "./models.ts";
+import { modelNames, resolveModelId, type CatalogModel } from "./model-catalog.ts";
+import { reasoningInfo } from "./model-params.ts";
+import { resolveContextWindow } from "./policy/context.ts";
+import { isEnabled } from "./policy/model-config.ts";
+import type { ModelPolicy } from "./policy/types.ts";
 import type { Image } from "./prompt/content.ts";
 import { ChunkQueue, Reply } from "./reply.ts";
 import { sessionKeyFor, type SessionRegistry } from "./session/registry.ts";
 import { runTurn } from "./session/turn.ts";
-import type { StallInfo } from "./session/watchdog.ts";
 import type { CursorSession } from "./session/session.ts";
+import type { StallInfo } from "./session/watchdog.ts";
 import { imageRefs, readRequest } from "./transcript.ts";
 
 /** Attachments are immutable, and every request carries the whole history: read each once. */
@@ -38,7 +36,10 @@ export interface AdapterDeps {
   catalog: ModelCatalog;
   tiers: ContextTierStore;
   registry: SessionRegistry;
-  policy: ModelPolicy;
+  /** Reads the model policy from the configuration as it currently stands. */
+  readPolicy: () => ModelPolicy;
+  /** Capacity published upstream for one model, when the fallback snapshot describes it. */
+  publishedWindow: (modelId: string) => number | undefined;
   /** Provider inactivity window before a run is abandoned; 0 disables it. */
   stallTimeoutMs: number;
   onStall?: (session: CursorSession, info: StallInfo) => void;
@@ -59,21 +60,31 @@ export class CursorAdapter extends LlmAdapter {
 
   override async listModels(provider: string): Promise<any[]> {
     this.deps.catalog.note();
-    const models = this.deps.catalog.current();
+    const policy = this.deps.readPolicy();
+    const models = this.models();
     const names = modelNames(models);
-    return models.map((m) => ({ provider, id: m.id, name: names.get(m.id), inputModalities: this.modalities() }));
+    return models
+      .filter((model) => isEnabled(policy, model.id))
+      .map((model) => ({ provider, id: model.id, name: names.get(model.id), inputModalities: this.modalities() }));
   }
 
   override async resolveModel(provider: string, model: string): Promise<any> {
     const models = this.models();
-    const entry = models.find((c) => c.id === model);
-    const accepted = this.deps.tiers.get(resolveModelId(model));
+    const entry = models.find((candidate) => candidate.id === model);
+    const modelId = resolveModelId(model);
+    const window = resolveContextWindow({
+      modelId,
+      model: entry,
+      accepted: this.deps.tiers.get(modelId),
+      policy: this.deps.readPolicy(),
+      publishedWindow: this.deps.publishedWindow(modelId),
+    });
     const info: any = {
       provider,
       id: model,
       name: modelNames(models).get(model) ?? model,
       inputModalities: this.modalities(),
-      context: { contextWindow: advertisedContextWindow(resolveModelId(model), entry, accepted, this.deps.policy) },
+      context: { contextWindow: window.tokens },
       systemPromptUpdate: "in-history",
     };
     const reasoning = reasoningInfo(entry);
@@ -84,7 +95,7 @@ export class CursorAdapter extends LlmAdapter {
   override async *stream(options: any): AsyncIterable<any> {
     if (options?.stop?.length) throw new LlmError("Cursor does not support stop sequences", "UNSUPPORTED_OPTION");
     const [apiKey, images] = await Promise.all([this.deps.resolveApiKey(), this.loadImages(options)]);
-    const model = this.models().find((m) => m.id === options.model);
+    const model = this.models().find((candidate) => candidate.id === options.model);
     const transcript = readRequest(options, images);
     const sessionId = typeof options.sessionId === "string" ? options.sessionId : undefined;
     const queue = new ChunkQueue();
@@ -103,7 +114,7 @@ export class CursorAdapter extends LlmAdapter {
         createAgent: this.deps.createAgent,
         registry: this.deps.registry,
         tiers: this.deps.tiers,
-        policy: this.deps.policy,
+        readPolicy: this.deps.readPolicy,
         stallTimeoutMs: this.deps.stallTimeoutMs,
         onStall: this.deps.onStall,
       },

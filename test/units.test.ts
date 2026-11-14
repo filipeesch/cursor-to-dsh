@@ -4,7 +4,6 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { DEFAULT_POLICY, advertisedContextWindow } from "../src/models.ts";
 import { ChunkQueue, Reply } from "../src/reply.ts";
 import { configureRipgrep, prewarmCursor, resetPrewarm } from "../src/sdk.ts";
 import { readRequest } from "../src/transcript.ts";
@@ -16,7 +15,15 @@ import { UsageLedger, takeUsage } from "../src/session/usage-ledger.ts";
 import { StallWatchdog } from "../src/session/watchdog.ts";
 import { ModelCatalog } from "../src/cursor/catalog.ts";
 import { ContextTierStore } from "../src/cursor/context-tier.ts";
-import { pluginStateDir, readJsonFile, resolveStateDir, writeJsonFile, type TierFile } from "../src/cursor/state.ts";
+import {
+  pluginStateDir,
+  readGzipJsonFile,
+  readJsonFile,
+  resolveStateDir,
+  writeGzipJsonFile,
+  writeJsonFile,
+  type TierFile,
+} from "../src/cursor/state.ts";
 import { createStallDiagnostics } from "../src/diagnostics.ts";
 import { resolveSettings } from "../src/config.ts";
 import { buckets, toTokenUsage } from "../src/usage.ts";
@@ -230,35 +237,27 @@ test("the accepted context tier is remembered and invalid entries are ignored", 
   assert.deepEqual(saved.at(-1), { claude: "300k", gpt: "128k" });
 });
 
-test("settings resolve with documented defaults and tolerate bad values", () => {
+test("settings resolve into readers over the live configuration", () => {
   const base = resolveSettings(undefined, {});
-  assert.deepEqual(base.policy, { context: "max", contextWindow: "auto", contextWindows: {}, maxMode: "off", fast: "off" });
   assert.equal(base.stallTimeoutMs, 120_000);
+  assert.equal(base.knownContext(), true);
+  assert.deepEqual(base.readPolicy(), { context: "max", maxMode: "off", fast: "off", newModels: "enabled", models: {} });
 
-  const tuned = resolveSettings(
-    { apiKeyEnv: "K", context: "300k", contextWindow: "400000", fast: "on", maxMode: "on", stallTimeoutMs: 5_000 } as any,
-    { DSH_CURSOR_CONTEXT: "min", DSH_CURSOR_STALL_TIMEOUT_MS: "9000" },
-  );
-  assert.deepEqual(tuned.policy, { context: "min", contextWindow: 400_000, contextWindows: {}, maxMode: "on", fast: "on" });
-  assert.equal(tuned.stallTimeoutMs, 9_000, "the environment wins over the config");
-
-  const bad = resolveSettings({ apiKeyEnv: "K", context: "", contextWindow: "nope", fast: "sometimes", maxMode: "maybe", stallTimeoutMs: -1 } as any, {});
-  assert.deepEqual(bad.policy, { context: "max", contextWindow: "auto", contextWindows: {}, maxMode: "off", fast: "off" });
-  assert.equal(bad.stallTimeoutMs, 120_000);
-
-  const mapped = resolveSettings(
-    { apiKeyEnv: "K", contextWindows: { deepseek: 1_000_000, "*": "500000", bad: -3, alsoBad: "nope" } } as any,
-    {},
-  );
-  assert.deepEqual(mapped.policy.contextWindows, { deepseek: 1_000_000, "*": 500_000 });
+  const off = resolveSettings({ knownContext: "off", stallTimeoutMs: 5_000 } as any, {});
+  assert.equal(off.knownContext(), false);
+  assert.equal(off.stallTimeoutMs, 5_000);
 });
 
-test("the advertised window follows the accepted tier unless it is set explicitly", () => {
-  const model = { parameters: [{ id: "context", values: [{ value: "200k" }, { value: "300k" }, { value: "1m" }] }] };
-  assert.equal(advertisedContextWindow("m", model, undefined, DEFAULT_POLICY), 1_000_000);
-  assert.equal(advertisedContextWindow("m", model, "300k", DEFAULT_POLICY), 300_000);
-  assert.equal(advertisedContextWindow("m", model, "300k", { ...DEFAULT_POLICY, contextWindow: 400_000 }), 400_000);
-  assert.equal(advertisedContextWindow("m", {}, undefined, DEFAULT_POLICY), 200_000, "a model without tiers keeps the documented default");
+test("the published-capacity snapshot round-trips through a gzip file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cursor-to-dsh-known-"));
+  try {
+    const file = join(dir, "known.json.gz");
+    assert.equal(readGzipJsonFile(file), undefined, "a missing file reads as absent");
+    writeGzipJsonFile(file, { version: 1, fetchedAt: 7, windows: { m: 262_144 } });
+    assert.deepEqual(readGzipJsonFile(file), { version: 1, fetchedAt: 7, windows: { m: 262_144 } });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("Reply emits balanced DSH blocks, usage, then one finish", async () => {

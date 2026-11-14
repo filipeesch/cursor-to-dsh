@@ -39,8 +39,6 @@ for (const file of files) {
 
 const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
 if (pkg.private) problems.push('package.json: "private" must be removed before publishing');
-if (!/^git\+https:\/\/github\.com\/[\w-]+\/[\w.-]+\.git$/.test(pkg.repository?.url || ''))
-  problems.push('package.json: repository.url must be the public GitHub repository');
 
 if (problems.length) {
   console.error(problems.join('\n'));

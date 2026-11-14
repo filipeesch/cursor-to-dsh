@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": [],
+    "noEmit": true,
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": [
+    "src/client",
+    "src/policy",
+    "src/model-catalog.ts",
+    "src/model-tiers.ts",
+    "src/catalog-payload.ts",
+    "src/constants.ts"
+  ]
+}

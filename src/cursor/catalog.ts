@@ -5,7 +5,7 @@
  * stale snapshot is refreshed out of band. `FALLBACK_MODELS` covers a cold start with no snapshot.
  */
 import { debug } from "../debug.ts";
-import { FALLBACK_MODELS, type CatalogModel } from "../models.ts";
+import { FALLBACK_MODELS, type CatalogModel } from "../model-catalog.ts";
 
 export interface CatalogSnapshot {
   models: CatalogModel[];

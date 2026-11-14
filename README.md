@@ -1,8 +1,5 @@
 # cursor-to-dsh
 
-[![npm](https://img.shields.io/npm/v/cursor-to-dsh)](https://www.npmjs.com/package/cursor-to-dsh)
-[![license](https://img.shields.io/npm/l/cursor-to-dsh)](LICENSE)
-
 > Use Cursor models as the `cursor` LLM provider in DeepSeek Harness (DSH) and DeepSeek Desktop, through the official `@cursor/sdk` and your own Cursor API key. DSH keeps the agent loop, tools and permissions; Cursor is only the model.
 
 Register Cursor as a model provider named `cursor` for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH, including DeepSeek Desktop). DSH owns the agent loop, tools and permissions; Cursor only provides the model.
@@ -15,7 +12,8 @@ Register Cursor as a model provider named `cursor` for [DeepSeek Harness](https:
 - **Tools belong to the host**: Cursor's built-in file, shell and edit tools stay off. Reading, writing and running commands happen in DSH, under DSH's sandbox and approvals.
 - **Cache reuse**: one Cursor agent per DSH session, and only new content is sent. Tool results return into the same run.
 - **Per-call usage**: the provider's usage report for each model turn is what reaches the host, so throughput, token and context meters show what Cursor actually billed for that call.
-- **Honest model metadata**: the context window reported to the host is the tier Cursor accepted, including after an automatic step-down, and can be overridden.
+- **Honest model metadata**: the context window reported to the host is the tier Cursor accepted, including after an automatic step-down; a model the catalog does not describe falls back to a capacity published upstream, then to a manual value, then to a documented default.
+- **Configured in the product**: the plugin's own page in Settings -> Plugins stores the API key, picks which models are offered, and sets the context tier, Max Mode and Fast mode per model.
 - **Stalls are visible**: a run that stops producing content is abandoned with a clear error and a diagnostic, instead of waiting forever.
 - **Images**: images in user messages and tool results are forwarded to Cursor.
 
@@ -23,7 +21,7 @@ Register Cursor as a model provider named `cursor` for [DeepSeek Harness](https:
 
 Requires DSH `0.2.0-rc.2` or newer (DeepSeek Desktop bundles `0.2.1-rc.2`).
 
-**CLI or any other profile**: `dsh plugin --profile <name> add cursor-to-dsh`.
+The plugin is installed from a local checkout. Build it once (`npm install && npm run build`), then point the profile at that directory.
 
 **DeepSeek Desktop**: the `desktop` profile is managed by the desktop app, and `dsh plugin add` fails with `managed exclusively by the Electron application`. Edit it by hand:
 
@@ -32,7 +30,7 @@ Requires DSH `0.2.0-rc.2` or newer (DeepSeek Desktop bundles `0.2.1-rc.2`).
 
    ```json
    {
-     "dependencies": { "cursor-to-dsh": "^0.2.0" },
+     "dependencies": { "cursor-to-dsh": "link:/absolute/path/to/this/checkout" },
      "dsh": { "profile": { "bundles": ["…existing entries…", "cursor-to-dsh"] } }
    }
    ```
@@ -45,13 +43,15 @@ Requires DSH `0.2.0-rc.2` or newer (DeepSeek Desktop bundles `0.2.1-rc.2`).
    open -a "DeepSeek Harness"
    ```
 
-To upgrade, change the version and repeat step 3.
+**Any other profile**: add the same `link:` dependency and bundle entry to that profile's `package.json` and run its install once.
 
 ### API key
 
-Create a key at [cursor.com/dashboard](https://cursor.com/dashboard) → API Keys → New API Key (a personal key or a service account key; Team Admin keys are not supported).
+Create a key at [cursor.com/dashboard](https://cursor.com/dashboard) -> API Keys -> New API Key (a personal key or a service account key; Team Admin keys are not supported).
 
-The Desktop "Models" settings page cannot store a key for a third-party plugin, so put it in `~/.dsh/.credentials.yaml` (mode `0600`, hot reloaded). If the file already exists, add one line under `refs:`:
+Open **Settings -> Plugins -> cursor-to-dsh -> Configure** and paste the key into the API key field. It is stored as a write-only credential under `CURSOR_API_KEY`; the page never reads it back.
+
+A key that lives outside the product is still honoured. Put it in `~/.dsh/.credentials.yaml` (mode `0600`, hot reloaded):
 
 ```yaml
 version: 1
@@ -59,31 +59,15 @@ refs:
   CURSOR_API_KEY: <your key>
 ```
 
-Lookup order: credentials file → `CURSOR_API_KEY` environment variable → plugin `apiKey` config.
+Lookup order: credentials service -> `CURSOR_API_KEY` environment variable.
 
 ### Verify
 
-Cursor appears under Settings → Models, and its models appear under the `cursor` provider. You can also set `agent-default-model` to `provider: cursor`.
-
-### Let an agent install it
-
-Send this to Claude Code, Cursor, pi, or another agent:
-
-```text
-Install cursor-to-dsh for my DeepSeek Harness Desktop by following the README at
-https://github.com/lukeinx/cursor-to-dsh, obeying the agent rules in it. Tell me where to put
-the Cursor API key once it is installed; I will fill in the key myself.
-```
-
-Rules for an agent doing the install:
-
-- Quit Desktop before editing the profile; only append entries, never change the existing `dependencies` and `bundles`.
-- The user writes the key into the credentials file. The agent must not read or print it.
-- Read [AGENTS.md](AGENTS.md) before changing this repository.
+Cursor appears as a provider for conversations, and **Settings -> Plugins -> cursor-to-dsh -> Configure** opens its page. You can also set `agent-default-model` to `provider: cursor`.
 
 ## Configuration
 
-The defaults work as they are. To change them, override this plugin's row in the profile's `cordis.patch.yml` (a patch replaces the whole `config`, so write every field you need):
+The page covers everyday use. To pin values in a profile patch instead, override this plugin's row in the profile's `cordis.patch.yml` (a patch replaces the whole `config`, so write every field you need):
 
 ```yaml
 - id: llm-cursor
@@ -91,53 +75,61 @@ The defaults work as they are. To change them, override this plugin's row in the
   config:
     apiKeyEnv: CURSOR_API_KEY
     context: max
-    contextWindow: auto
-    contextWindows:
-      "*": 1000000
-      deepseek-v41-flash-1017: 1000000
+    models:
+      "*":
+        maxMode: "off"
+      deepseek-v41-flash-1017:
+        enabled: true
+        contextWindow: 1000000
+    newModels: enabled
     maxMode: "off"
     fast: "off"
+    knownContext: "on"
     stallTimeoutMs: 120000
 ```
 
 | Option | Default | Environment override | Meaning |
 |---|---|---|---|
 | `apiKeyEnv` | `CURSOR_API_KEY` | | Credential / environment variable that holds the Cursor API key |
-| `apiKey` | none | | Plain-text key; not recommended |
-| `context` | `max` | `DSH_CURSOR_CONTEXT` | Context tier requested from Cursor: `min`, `max`, or an offered value such as `300k`. A rejected tier steps down automatically and the accepted tier is remembered |
-| `contextWindow` | `auto` | | Global context window reported to the host: `auto` follows the accepted tier, or give a token count such as `400000` |
-| `contextWindows` | none | | Per-model window in tokens; `"*"` covers every model without its own entry. Most specific wins: model entry, `"*"`, `contextWindow`, accepted tier, then the documented default (`200000`) |
+| `context` | `max` | `DSH_CURSOR_CONTEXT` | Global context tier preference: `max` (largest the Max Mode policy allows) or `min`. A model entry may name one of its offered tiers, such as `300k` |
+| `models` | none | | Per-model settings keyed by model id; `"*"` covers models without their own entry: `enabled`, `context`, `contextWindow` (tokens), `maxMode`, `fast` |
+| `newModels` | `enabled` | | Whether a model with no entry of its own is offered: `enabled` or `disabled` |
 | `maxMode` | `off` | | Cursor Max Mode, the extended-context mode Cursor bills differently: `off` never requests a Max-Mode-only tier, `on` requests the largest tier with the flag, `auto` leaves it to Cursor's catalog |
 | `fast` | `off` | | Cursor Fast (priority, higher-cost) mode: `off`, `on`, or `auto` to leave it to Cursor |
+| `knownContext` | `on` | | Fetch published model capacities from models.dev as the fallback: `on` or `off` |
 | `stallTimeoutMs` | `120000` | `DSH_CURSOR_STALL_TIMEOUT_MS` | Milliseconds without provider content before a run is abandoned; `0` disables the watchdog |
 | `cwd` | session working directory | `DSH_CURSOR_CWD` | Cursor agent working directory |
+
+The advertised context window is resolved in this order: the provider tier in effect (including a tier Cursor accepted after a step-down), the capacity published upstream for that model, a manual per-model value, then the documented default of `200000`. A manual value never overrides a provider tier or a published capacity; the page only offers the field when nothing more authoritative applies.
 
 Other environment variables:
 
 - `DSH_CURSOR_DEBUG=1` writes debug lines to stderr.
 - `DSH_CURSOR_PREWARM=0` disables warm-up (the plugin pre-builds one agent in the background, saving the Cursor SDK's first ~8 seconds of setup).
-- `DSH_CURSOR_STATE_DIR` overrides where the plugin keeps its small persisted files, defaulting to the DSH home (`~/.dsh`). It stores the cached model catalog, the accepted context tier per model, and `stall.log`.
+- `DSH_CURSOR_STATE_DIR` overrides where the plugin keeps its small persisted files, defaulting to the DSH home (`~/.dsh`). It stores the cached model catalog, the accepted context tier per model, the gzip-compressed published-capacity snapshot, and `stall.log`.
 
 ## Known limitations
 
 - File attachments, offloaded images and unreadable images are not forwarded to Cursor; they become a placeholder note. Replaying history carries only the last user message's images.
 - Cursor reports usage **once per run**, accumulated over every model call the run made. The plugin divides that report by the number of calls the run served and reports it once, on the run's last call, so the host sees one request's worth of usage. Session totals therefore read as the run's average request rather than the sum of every call — without that division the context meter reads N times the real context and compaction triggers on a conversation that is not full. When Cursor reports nothing, the host is told nothing; the plugin never invents a number.
 - A tool call is handed to DSH within 100 ms. Part of that budget (40 ms) is reserved for catching the turn's usage report, so a slow report can cost the numbers for that call but never delays the tools.
-- Not every Cursor model publishes a context tier: 14 of the 26 in the current catalog do not, including `deepseek-v41-flash-1017` and the `auto` entries. Those models are advertised with the documented default (`200000`) unless `contextWindows` names them; the default is a placeholder, not a capacity measured from the provider.
+- Not every Cursor model publishes a context tier: 13 of the 26 in the current catalog do not, including `deepseek-v41-flash-1017` and the `auto` entries. Those models use the capacity published upstream (models.dev) when it describes them, else a manual value, else the documented default (`200000`). The published value is a capacity the upstream catalog declares, not a capacity measured from Cursor.
 - Max Mode is the tier Cursor offers at the largest context, and it is billed differently. It stays off unless `maxMode` says otherwise, so `context: max` lands on the largest tier that runs without it.
 - `stop` is not supported (`UNSUPPORTED_OPTION`); `temperature` and `maxTokens` are ignored.
 
 ## Development
 
 ```bash
-npm install && npm run build   # the host loads lib/, so rebuild and restart the app after a source change
+npm install && npm run build   # the host loads lib/ and the browser loads lib/client.js; rebuild and restart after a source change
 npm test                       # unit tests with a fake Cursor agent
-npm run check                  # type check
-npm run check:public           # before pushing to GitHub or publishing: no internal links, local paths or non-English text
+npm run check                  # type check, host and browser halves
+npm run check:public           # no internal links, local paths or non-English text
 CURSOR_API_KEY=... node --experimental-strip-types scripts/live.ts [model]   # real Cursor run
 ```
 
 The live script prints, for every call, the provider's usage report and how long after the call started it arrived. That is the measurement the per-call usage attribution depends on.
+
+The browser half is TypeScript compiled by `scripts/build-client.mjs` into one module-loader factory bundle (`lib/client.js`). React and the UI primitives stay external because the product's module table supplies them.
 
 Point Desktop at a local checkout by writing the dependency as `"cursor-to-dsh": "link:<absolute repo path>"`.
 
