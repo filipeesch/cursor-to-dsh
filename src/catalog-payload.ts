@@ -89,13 +89,17 @@ function variantsOfModel(model: CatalogModel): CatalogVariantView[] {
  */
 export function catalogPayload(args: CatalogPayloadArgs): CatalogPayload {
   const names = modelNames(args.models);
+  // Ordered for the reader: the page lists this document as it is, so the order lives here rather
+  // than in one view. Display names are compared the way a person sorts them.
+  const ordered = [...args.models].sort((left, right) =>
+    (names.get(left.id) ?? left.id).localeCompare(names.get(right.id) ?? right.id, undefined, { sensitivity: "base" }));
   return {
     version: 1,
     provider: PROVIDER_ID,
     rowId: args.rowId,
     settingsNs: args.settingsNs,
     knownContext: args.knownContext,
-    models: args.models.map((model) => {
+    models: ordered.map((model) => {
       const view: CatalogModelView = {
         id: model.id,
         name: names.get(model.id) ?? model.id,

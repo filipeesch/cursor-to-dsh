@@ -30,6 +30,16 @@ const deps: CatalogRouteDeps = {
   knownContext: () => ({ enabled: true, fetchedAt: 1_700_000_000_000 }),
 };
 
+test("the payload lists the models alphabetically by display name", () => {
+  const unordered = [
+    { id: "zeta", displayName: "Zeta" },
+    { id: "alpha", displayName: "Alpha" },
+    { id: "beta", displayName: "beta" },
+  ];
+  const payload = payloadFor({ ...deps, models: () => unordered as any });
+  assert.deepEqual(payload.models.map((model) => model.id), ["alpha", "beta", "zeta"], "case does not change the order");
+});
+
 test("the payload carries the row identity and the catalog shape the page renders", () => {
   const payload = payloadFor(deps);
   assert.equal(payload.version, 1);

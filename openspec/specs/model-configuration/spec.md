@@ -172,7 +172,7 @@ The plugin SHALL advertise only the models that are enabled, where a model with 
 
 ### Requirement: A published capacity is a fallback the request path never waits for
 
-When the provider publishes no context tier for a model, the plugin SHALL fall back to a capacity published in a public upstream model catalog, refreshed out of band and persisted across restarts. User-facing surfaces SHALL identify that value as a published capacity rather than a capacity measured from the provider. When candidates disagree for the same model, the plugin SHALL prefer the model's own vendor and SHALL NOT advertise more than the smallest candidate declares. A configuration value SHALL disable the upstream fetch; while it is disabled the plugin SHALL use only manual values and the documented default. The plugin SHALL NOT wait for the upstream catalog on any request path and SHALL continue without it when the fetch fails.
+When the provider publishes no context tier for a model, the plugin SHALL fall back to a capacity published in a public upstream model catalog, refreshed out of band and persisted across restarts. User-facing surfaces SHALL identify that value as a published capacity rather than a capacity measured from the provider. When candidates disagree for the same model, the plugin SHALL prefer the capacity published by the model's own vendor provider, and when no vendor provider carries the model SHALL use the capacity most candidates declare, preferring the larger on a tie. A configuration value SHALL disable the upstream fetch; while it is disabled the plugin SHALL use only manual values and the documented default. The plugin SHALL NOT wait for the upstream catalog on any request path and SHALL continue without it when the fetch fails.
 
 #### Scenario: The upstream catalog describes the model
 
@@ -188,4 +188,10 @@ When the provider publishes no context tier for a model, the plugin SHALL fall b
 #### Scenario: Candidates disagree
 
 - **WHEN** the upstream catalog publishes different capacities for the same model id across providers
-- **THEN** the plugin prefers the model's own vendor and never advertises more than the smallest candidate
+- **THEN** the plugin uses the capacity published by the model's own vendor provider
+- **AND** when no vendor provider carries the model, it uses the capacity most candidates declare, preferring the larger on a tie
+
+#### Scenario: A third party declares a smaller variant
+
+- **WHEN** a provider that is not the model's vendor publishes a reduced-window variant of it
+- **THEN** that capacity does not replace the vendor's own capacity

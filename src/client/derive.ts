@@ -90,7 +90,9 @@ export function derivePage(values: ConfigValues | undefined, payload: CatalogPay
       window,
       manualWindow: {
         editable: window.source !== "tier" && window.source !== "published",
-        ...(entry.contextWindow === undefined ? {} : { value: entry.contextWindow }),
+        // Prefilled with the window in effect, so a model that only has the documented default
+        // still shows a number; editing writes an override.
+        value: entry.contextWindow ?? window.tokens,
       },
     };
   });
