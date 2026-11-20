@@ -66,7 +66,9 @@ export class CatalogController {
         return catalog;
       })
       .catch((error: unknown) => {
-        this.publish({ catalogError: messageOf(error), loading: false });
+        // A failed read drops the previous document: the page must not present a catalog it can
+        // no longer confirm as current, and its rows would otherwise outlive the failure notice.
+        this.publish({ catalog: undefined, catalogError: messageOf(error), loading: false });
         return undefined;
       })
       .finally(() => {

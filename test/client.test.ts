@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import type { CatalogPayload } from "../src/catalog-payload.ts";
+import { CATALOG_VERSION, type CatalogPayload } from "../src/catalog-payload.ts";
+import { catalogReadError } from "../src/client/index.ts";
 import { CatalogController } from "../src/client/controller.ts";
 import {
   derivePage,
@@ -20,10 +21,9 @@ import type { PageHandlers, PageState } from "../src/client/views.ts";
 import { KeySection, ModelsSection, ModelRowView, NewModelsSection, PageView, SummaryView } from "../src/client/views.ts";
 
 const payload: CatalogPayload = {
-  version: 1,
+  version: CATALOG_VERSION,
   provider: "cursor",
   rowId: "llm-cursor",
-  settingsNs: "llm-cursor",
   knownContext: { enabled: true, fetchedAt: 1_700_000_000_000 },
   models: [
     {
@@ -220,7 +220,7 @@ test("the model list states its loading and unavailable conditions", () => {
   assert.match(collected(loading), /Loading the model catalog/);
 
   const unavailable = ModelsSection({ state: pageState({ catalogError: "route answered 401", derived: derivePage(undefined, undefined) }), handlers, segmented });
-  assert.match(collected(unavailable), /model catalog is unavailable/);
+  assert.match(collected(unavailable), /route answered 401/);
 });
 
 test("a stored key is never shown: the section offers to replace it instead", () => {
@@ -328,4 +328,75 @@ test("the controller fetches once at a time and reports failures", async () => {
   const failing = new CatalogController({ fetchCatalog: async () => { throw new Error("route answered 401"); }, describeKey: async () => undefined, setKey: async () => undefined });
   assert.equal(await failing.loadCatalog(), undefined);
   assert.match(failing.getState().catalogError ?? "", /401/);
+});
+
+test("a refused catalog read names the condition, the next step, and the status", () => {
+  // A bare status cannot tell a broken plugin from a stale session or a build that predates the
+  // route, so each refusal states what happened and what the reader can do about it.
+  const cases = [
+    { status: 401, condition: /browser session is missing or expired/i, step: /Reopen the page from DSH/i },
+    { status: 403, condition: /refused this caller access/i, step: /Sign in as the host owner/i },
+    { status: 404, condition: /does not serve the catalog route/i, step: /Update the plugin/i },
+    { status: 503, condition: /could not confirm who is asking/i, step: /Restart DSH/i },
+    { status: 400, condition: /could not answer the request/i, step: /Reload catalog/i },
+  ] as const;
+  for (const { status, condition, step } of cases) {
+    const message = catalogReadError(status);
+    assert.match(message, condition, "the message names the condition");
+    assert.match(message, step, "the message names a next step, not just the failure");
+    assert.match(message, new RegExp(String(status)), "the number stays for diagnosis");
+  }
+});
+
+
+test("an unrecognized status keeps the generic message instead of inventing a claim", () => {
+  // The status alone cannot identify a cause, so an unknown one falls back to the generic
+  // statement plus a next step rather than guessing at a condition that may be wrong.
+  const message = catalogReadError(418);
+  assert.match(message, /model catalog is unavailable/i);
+  assert.match(message, /Reload catalog/i);
+  assert.match(message, /418/);
+  assert.doesNotMatch(message, /session|owner|authorization decision/i);
+});
+
+test("the page renders the named condition with the unavailable notice", () => {
+  const refused = catalogReadError(401);
+  const state = pageState({ catalogError: refused, derived: derivePage(undefined, undefined) });
+  const rendered = collected(ModelsSection({ state, handlers, segmented: FakeSegmented }));
+  assert.match(rendered, /model catalog is unavailable/);
+  assert.match(rendered, /browser session is missing or expired/i);
+  assert.match(rendered, /Reopen the page from DSH/i, "the notice carries the recovery step, not just the failure");
+  assert.match(rendered, /401/);
+});
+
+test("a reload that fails stops describing the catalog it can no longer show", async () => {
+  // Success then failure is the path the page actually takes on a dropped session: the previous
+  // catalog must stop being described, or the page reports a count for rows it is not showing.
+  let fail = false;
+  const flaky = new CatalogController({
+    fetchCatalog: async () => {
+      if (fail) throw new Error(catalogReadError(401));
+      return payload;
+    },
+    describeKey: async () => true,
+    setKey: async () => undefined,
+  });
+
+  const loaded = await flaky.loadCatalog();
+  assert.ok(loaded, "the first read succeeds");
+  const loadedState = pageState({ derived: derivePage(undefined, loaded) });
+  const loadedRender = collected(ModelsSection({ state: loadedState, handlers, segmented: FakeSegmented }));
+  assert.match(loadedRender, /of 5 enabled/, "the summary describes the rows on screen");
+
+  fail = true;
+  assert.equal(await flaky.loadCatalog(), undefined, "the reload fails");
+  const failed = flaky.getState();
+  assert.ok(failed.catalog === undefined, "the stale catalog is dropped rather than presented as current");
+  assert.match(failed.catalogError ?? "", /browser session is missing or expired/i);
+
+  const failedState = pageState({ catalogError: failed.catalogError, derived: derivePage(undefined, failed.catalog) });
+  const failedRender = collected(ModelsSection({ state: failedState, handlers, segmented: FakeSegmented }));
+  assert.match(failedRender, /model catalog is unavailable/i);
+  assert.doesNotMatch(failedRender, /of 5 enabled/, "no count survives the failure");
+  assert.doesNotMatch(failedRender, /Composer/, "no model row survives the failure");
 });

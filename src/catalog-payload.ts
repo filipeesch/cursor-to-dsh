@@ -8,6 +8,12 @@
 import { modelNames, type CatalogModel, type Param } from "./model-catalog.ts";
 import { PROVIDER_ID } from "./constants.ts";
 
+/**
+ * The payload shape version, shared by the host that produces the document and the page that reads
+ * it. One constant, so the pair cannot drift apart without a test noticing.
+ */
+export const CATALOG_VERSION = 1;
+
 /** One parameter, with the values the model actually accepts. */
 export interface CatalogParameterView {
   id: string;
@@ -37,12 +43,10 @@ export interface CatalogModelView {
 
 /** The whole document served at the catalog route. */
 export interface CatalogPayload {
-  version: 1;
+  version: typeof CATALOG_VERSION;
   provider: string;
   /** Loader row id the page's Configure registration is keyed by. */
   rowId: string;
-  /** Settings namespace this row's configuration lives in. */
-  settingsNs: string;
   knownContext: { enabled: boolean; fetchedAt?: number };
   models: CatalogModelView[];
 }
@@ -50,7 +54,6 @@ export interface CatalogPayload {
 /** Inputs the payload assembles. */
 export interface CatalogPayloadArgs {
   rowId: string;
-  settingsNs: string;
   models: readonly CatalogModel[];
   publishedWindow: (modelId: string) => number | undefined;
   acceptedTier: (modelId: string) => string | undefined;
@@ -94,10 +97,9 @@ export function catalogPayload(args: CatalogPayloadArgs): CatalogPayload {
   const ordered = [...args.models].sort((left, right) =>
     (names.get(left.id) ?? left.id).localeCompare(names.get(right.id) ?? right.id, undefined, { sensitivity: "base" }));
   return {
-    version: 1,
+    version: CATALOG_VERSION,
     provider: PROVIDER_ID,
     rowId: args.rowId,
-    settingsNs: args.settingsNs,
     knownContext: args.knownContext,
     models: ordered.map((model) => {
       const view: CatalogModelView = {

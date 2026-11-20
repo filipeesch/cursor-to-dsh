@@ -187,7 +187,7 @@ export function ModelsSection(props: { state: PageState; handlers: PageHandlers;
   const { handlers, segmented } = props;
   let body: any;
   if (catalogLoading) body = h("p", { className: "ctd-note" }, "Loading the model catalog from Cursor...");
-  else if (catalogError !== undefined) body = h("div", { className: "ctd-alert" }, "The model catalog is unavailable right now: " + catalogError);
+  else if (catalogError !== undefined) body = h("div", { className: "ctd-alert" }, catalogError);
   else if (derived.rows.length === 0) body = h("p", { className: "ctd-note" }, "Cursor has not published any models yet.");
   else body = h("ul", { className: "ctd-models" }, ...derived.rows.map((row) => h(ModelRowView, {
     key: row.id,
@@ -196,8 +196,13 @@ export function ModelsSection(props: { state: PageState; handlers: PageHandlers;
     handlers,
     segmented,
   })));
+  // The summary describes the catalog on screen. While the catalog is unavailable the rows are
+  // gone, so repeating a count from the previous read would describe content the reader cannot see.
+  const summary = derived.rows.length === 0 || catalogError !== undefined
+    ? undefined
+    : derived.enabledCount + " of " + derived.rows.length + " enabled; changes save as you make them. A disabled model leaves the picker but a saved conversation keeps working.";
   return section("Models",
-    derived.rows.length === 0 ? undefined : derived.enabledCount + " of " + derived.rows.length + " enabled; changes save as you make them. A disabled model leaves the picker but a saved conversation keeps working.",
+    summary,
     body,
     h("button", {
       type: "button",
