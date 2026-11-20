@@ -137,7 +137,6 @@ export function apply(ctx: Context, config: Config): void {
 
   registerCatalogRoute(ctx, {
     rowId,
-    settingsNs: rowId,
     models: () => catalog.current(),
     publishedWindow: (modelId: string) => known.windowFor(modelId),
     acceptedTier: (modelId: string) => tiers.get(modelId),

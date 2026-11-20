@@ -19,7 +19,7 @@ Register Cursor as a model provider named `cursor` for [DeepSeek Harness](https:
 
 ## Install
 
-Requires DSH `0.2.0-rc.2` or newer (DeepSeek Desktop bundles `0.2.1-rc.2`).
+Requires DSH `0.2.2-rc.2` or newer, the dependency line this release is built and tested against.
 
 The plugin is installed from a local checkout. Build it once (`npm install && npm run build`), then point the profile at that directory.
 

@@ -8,7 +8,7 @@
  */
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
 
-import type { CatalogPayload } from "../catalog-payload.ts";
+import { CATALOG_VERSION, type CatalogPayload } from "../catalog-payload.ts";
 import { CATALOG_PATH, DEFAULT_ROW_ID, PACKAGE_NAME } from "../constants.ts";
 import { CatalogController } from "./controller.ts";
 import { CursorRowConfig } from "./page.ts";
@@ -27,9 +27,6 @@ function loadPrimitives(): { SegmentedControl?: any } {
   }
 }
 
-/** Bumped whenever the catalog document changes shape; the page refuses what it cannot read. */
-const PAYLOAD_VERSION = 1;
-
 /** The slot service, narrowed to the one registration this plugin makes. */
 interface SlotsLike {
   inject(
@@ -43,13 +40,34 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * The condition behind a refused catalog read, in words the reader can act on.
+ *
+ * The host answers a route that throws with a body-less `400`, so the status alone cannot tell a
+ * broken plugin from a build that predates the route. Each known refusal gets its own sentence and
+ * keeps the number, which is what a maintainer needs.
+ * @param status - the status the route answered.
+ * @returns the message for that status.
+ */
+export function catalogReadError(status: number): string {
+  // Each message is the whole sentence the page shows: what failed, what the reader can do next,
+  // and the status for diagnosis. The status alone cannot identify a cause, so an unknown one
+  // states only what is certain rather than guessing.
+  if (status === 401) return "The model catalog is unavailable: your DSH browser session is missing or expired. Reopen the page from DSH, then select Reload catalog. (HTTP 401)";
+  if (status === 403) return "The model catalog is unavailable: DSH refused this caller access. Sign in as the host owner, then select Reload catalog. (HTTP 403)";
+  if (status === 404) return "The model catalog is unavailable: this DSH build does not serve the catalog route. Update the plugin to a version that matches your DSH. (HTTP 404)";
+  if (status === 503) return "The model catalog is unavailable: DSH could not confirm who is asking. Restart DSH, then select Reload catalog. (HTTP 503)";
+  if (status === 400) return "The model catalog is unavailable: DSH could not answer the request. Select Reload catalog to try again; if it still fails, report HTTP 400 to your administrator.";
+  return "The model catalog is unavailable. Select Reload catalog to try again. (HTTP " + status + ")";
+}
+
 /** Fetch the catalog the plugin's Host half serves. */
 async function fetchCatalog(): Promise<CatalogPayload> {
   const response = await fetch(CATALOG_PATH, { credentials: "same-origin", headers: { accept: "application/json" } });
-  if (!response.ok) throw new Error("catalog route answered " + response.status);
+  if (!response.ok) throw new Error(catalogReadError(response.status));
   const payload = (await response.json()) as CatalogPayload;
-  if (payload?.version !== PAYLOAD_VERSION || !Array.isArray(payload.models)) {
-    throw new Error("catalog route answered an unsupported document");
+  if (payload?.version !== CATALOG_VERSION || !Array.isArray(payload.models)) {
+    throw new Error("the catalog document has a shape this page cannot read (version " + String(payload?.version) + ")");
   }
   return payload;
 }

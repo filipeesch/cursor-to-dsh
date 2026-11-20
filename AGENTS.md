@@ -20,7 +20,7 @@ DeepSeek Harness (DSH) plugin that registers Cursor as the `cursor` LLM provider
 | `src/credentials.ts` | One credential resolver: host credentials, then the launch environment |
 | `src/adapter.ts` | `CursorAdapter extends LlmAdapter`: `stream`, `listModels`, `resolveModel`, image cache |
 | `src/catalog-payload.ts` | The catalog document the configuration page reads |
-| `src/route.ts` | The authenticated catalog route and its payload |
+| `src/route.ts` | The authenticated catalog route: admission through `connection.admit`, the owner check, and the payload it answers |
 | `src/transcript.ts` | DSH `GenerateOptions` -> core transcript (`user` / `developer` / `assistant` / `toolResult`) |
 | `src/reply.ts` | DSH `StreamChunk` output, the mirrored assistant message and the terminal error codes |
 | `src/usage.ts` | Cursor usage -> DSH disjoint buckets (no combined total) |
@@ -87,7 +87,7 @@ Render the diagram after editing the SVG: `rsvg-convert -w 1400 -h 980 docs/imag
 - A model's context window is the tier in effect, then a capacity published upstream, then a manual per-model value, then the capacity the provider documents in `src/documented-capacities.ts`, then the documented default. The published and documented values are declared capacities, never measured ones. Max Mode is legacy (Cursor removed it for usage-based pricing): never send its flag and never filter tiers by it.
 - The policy is read per decision (`settings.readPolicy()`), never captured at `apply` time, so a save applies without remounting the plugin. Every field the page edits is volatile; ordinary fields are invisible to settings.
 - The shipped modules under `src/policy`, `src/model-tiers.ts`, `src/model-catalog.ts`, `src/catalog-payload.ts`, `src/documented-capacities.ts` and `src/constants.ts` are imported by both halves: keep them dependency-free (no node builtins, no SDK).
-- The catalog route is the plugin's only HTTP surface. It applies `connection.requestRejection` before answering, answers read-only JSON, and carries no credential material; without a web carrier it is never registered.
+- The catalog route is the plugin's only HTTP surface. Trust fencing and browser-session authentication belong to the host: the handler calls `connection.admit(request)`, read per request rather than injected, because that is the one admission seam every published host carries; a host without it fails closed with `503`. The handler adds the one check admission cannot make - the caller must be the host owner - then answers read-only JSON with no credential material; without a web carrier the route is never registered.
 - The browser half is built by esbuild into one module-loader factory; React and the UI primitives stay external. `src/client/**` must not import node builtins, and its logic stays hook-free where it can be tested directly.
 - Dependencies point one way: `index -> adapter -> session/turn -> (session, increment, tools, handoff-window, timing, usage-ledger, watchdog, model-params, model-tiers, usage, prompt, transcript)`. Pass collaborators in; do not add module-level singletons.
 - New behavior gets a test through `CursorAdapter.stream()` in `test/session.test.ts` or a unit test.
